@@ -9,22 +9,41 @@ import os
 from kubernetes import client, config
 from langchain_core.tools import tool
 
-# Load k8s config once at module import — not on every tool call.
-# Calling load_incluster_config() repeatedly under concurrent async tool calls
-# resets global config state and causes 401s.
-if os.getenv("KUBERNETES_SERVICE_HOST"):
-    config.load_incluster_config()
-else:
-    _kubeconfig = os.getenv("KUBECONFIG", os.path.expanduser("~/.kube/config"))
-    config.load_kube_config(config_file=_kubeconfig)
+# k3s uses projected (bound) service account tokens that rotate.
+# Global config caches the token at import time → goes stale → 401.
+# Fix: read token fresh from file on every API client creation.
+_SA_TOKEN = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+_SA_CERT  = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+
+def _api_client() -> client.ApiClient:
+    """Build ApiClient. In-cluster: reads SA token fresh every call (handles rotation)."""
+    if os.getenv("KUBERNETES_SERVICE_HOST"):
+        host = (
+            f"https://{os.environ['KUBERNETES_SERVICE_HOST']}"
+            f":{os.environ['KUBERNETES_SERVICE_PORT_HTTPS']}"
+        )
+        with open(_SA_TOKEN) as f:
+            token = f.read().strip()
+        cfg = client.Configuration(
+            host=host,
+            api_key={"authorization": f"Bearer {token}"},
+        )
+        cfg.ssl_ca_cert = _SA_CERT
+        return client.ApiClient(configuration=cfg)
+    else:
+        config.load_kube_config(
+            config_file=os.getenv("KUBECONFIG", os.path.expanduser("~/.kube/config"))
+        )
+        return client.ApiClient()
 
 
 def _core() -> client.CoreV1Api:
-    return client.CoreV1Api()
+    return client.CoreV1Api(api_client=_api_client())
 
 
 def _apps() -> client.AppsV1Api:
-    return client.AppsV1Api()
+    return client.AppsV1Api(api_client=_api_client())
 
 
 @tool
@@ -268,8 +287,7 @@ def get_resource_usage(namespace: str) -> str:
     Requires metrics-server to be installed in the cluster.
     """
     try:
-        _load_k8s()
-        custom = client.CustomObjectsApi()
+        custom = client.CustomObjectsApi(api_client=_api_client())
         metrics = custom.list_namespaced_custom_object(
             group="metrics.k8s.io",
             version="v1beta1",
