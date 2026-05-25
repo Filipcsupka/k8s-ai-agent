@@ -9,23 +9,21 @@ import os
 from kubernetes import client, config
 from langchain_core.tools import tool
 
-
-def _load_k8s():
-    """Load k8s config: in-cluster when KUBERNETES_SERVICE_HOST is set, else kubeconfig."""
-    if os.getenv("KUBERNETES_SERVICE_HOST"):
-        config.load_incluster_config()
-    else:
-        kubeconfig = os.getenv("KUBECONFIG", os.path.expanduser("~/.kube/config"))
-        config.load_kube_config(config_file=kubeconfig)
+# Load k8s config once at module import — not on every tool call.
+# Calling load_incluster_config() repeatedly under concurrent async tool calls
+# resets global config state and causes 401s.
+if os.getenv("KUBERNETES_SERVICE_HOST"):
+    config.load_incluster_config()
+else:
+    _kubeconfig = os.getenv("KUBECONFIG", os.path.expanduser("~/.kube/config"))
+    config.load_kube_config(config_file=_kubeconfig)
 
 
 def _core() -> client.CoreV1Api:
-    _load_k8s()
     return client.CoreV1Api()
 
 
 def _apps() -> client.AppsV1Api:
-    _load_k8s()
     return client.AppsV1Api()
 
 
