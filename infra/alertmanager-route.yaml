@@ -1,0 +1,46 @@
+# Patch for AlertManager config in the monitoring namespace.
+# Add this route + receiver to your existing alertmanager ConfigMap.
+#
+# Apply: kubectl -n monitoring edit configmap alertmanager-config
+# Or if using Prometheus Operator, patch the AlertmanagerConfig CRD.
+#
+# The agent receives ALL firing alerts. It will investigate any namespace.
+# You can narrow it with match_re if you want to filter by severity or namespace.
+
+# ── Add to existing routes section ───────────────────────────────────────────
+# routes:
+#   - receiver: k8s-ai-agent
+#     continue: true           # <-- important: don't stop other receivers
+#     match:
+#       severity: critical
+#     # Remove the severity match to catch all alerts
+
+# ── Add to existing receivers section ────────────────────────────────────────
+# receivers:
+#   - name: k8s-ai-agent
+#     webhook_configs:
+#       - url: http://k8s-ai-agent.ai-agent.svc.cluster.local/alert
+#         send_resolved: false   # we only investigate firing alerts
+
+---
+# Full example AlertManager ConfigMap for reference
+# (replace with your actual existing config, don't overwrite)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config-k8s-ai-agent-snippet
+  namespace: monitoring
+data:
+  # This is a SNIPPET — merge into your existing alertmanager config, don't replace it
+  route_snippet: |
+    routes:
+      - receiver: k8s-ai-agent
+        continue: true
+        match:
+          severity: critical
+  receiver_snippet: |
+    receivers:
+      - name: k8s-ai-agent
+        webhook_configs:
+          - url: http://k8s-ai-agent.ai-agent.svc.cluster.local/alert
+            send_resolved: false

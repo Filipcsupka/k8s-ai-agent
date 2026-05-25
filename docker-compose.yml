@@ -1,0 +1,14 @@
+version: "3.9"
+
+services:
+  k8s-ai-agent:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    volumes:
+      # mount kubeconfig for local dev (in-cluster auth not available locally)
+      - ${KUBECONFIG:-~/.kube/config}:/app/kubeconfig.yaml:ro
+    environment:
+      - KUBECONFIG=/app/kubeconfig.yaml
+    restart: unless-stopped

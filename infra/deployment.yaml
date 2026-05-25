@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-ai-agent
+  namespace: ai-agent
+  labels:
+    app: k8s-ai-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-ai-agent
+  template:
+    metadata:
+      labels:
+        app: k8s-ai-agent
+    spec:
+      serviceAccountName: k8s-ai-agent
+
+      # Pin to GPU node — Ollama runs there, keeping agent calls local (no cross-node latency)
+      nodeSelector:
+        accelerator: nvidia
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+
+      containers:
+        - name: agent
+          image: ghcr.io/filipcsupka/k8s-ai-agent:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: OLLAMA_BASE_URL
+              # Ollama is on the same GPU node host, exposed via k8s Service in ai-chat namespace
+              value: "http://ollama.ai-chat.svc.cluster.local:11434"
+            - name: OLLAMA_MODEL
+              value: "qwen3:8b"
+            - name: ENABLE_AUTO_APPLY
+              value: "false"
+            - name: SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: k8s-ai-agent-secrets
+                  key: slack-webhook-url
+                  optional: true  # agent works without Slack (logs to stdout)
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10

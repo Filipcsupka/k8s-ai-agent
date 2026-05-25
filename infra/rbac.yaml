@@ -1,0 +1,44 @@
+# Phase 1: read-only ClusterRole
+# The agent needs cluster-wide read access because alerts can come from any namespace.
+# Write permissions are NOT granted here — Phase 3 will add a separate narrow Role.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-ai-agent-reader
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - events
+      - nodes
+      - namespaces
+      - services
+      - endpoints
+      - configmaps
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources:
+      - deployments
+      - replicasets
+      - statefulsets
+      - daemonsets
+    verbs: [get, list, watch]
+  - apiGroups: [metrics.k8s.io]
+    resources:
+      - pods
+      - nodes
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-ai-agent-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8s-ai-agent-reader
+subjects:
+  - kind: ServiceAccount
+    name: k8s-ai-agent
+    namespace: ai-agent
