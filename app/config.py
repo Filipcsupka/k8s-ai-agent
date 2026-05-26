@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     agent_timeout_seconds: int = 120
     max_concurrent_investigations: int = 3
     investigations_dir: str = "/data/investigations"
+    max_investigations_per_scenario: int = 2
 
     class Config:
         env_file = ".env"
