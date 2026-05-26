@@ -12,17 +12,29 @@ from langchain_core.tools import tool
 
 logger = logging.getLogger(__name__)
 
-# k3s uses projected (bound) service account tokens that rotate every hour.
-# Fix: call load_incluster_config() on EVERY _api_client() call — it reads the
-# token file fresh each time and sets all TLS/hostname settings correctly.
-# Do NOT call it once at import time (token goes stale → 401 after rotation).
+# kubernetes-client Python v36 changed the api_key dict key from 'authorization'
+# (used by load_incluster_config) to 'BearerToken' (checked in auth_settings()).
+# load_incluster_config() sets api_key['authorization'] → auth_settings() finds nothing
+# → no Authorization header sent → 401 Unauthorized on every call.
+#
+# Fix: read token fresh from file (handles k3s projected token rotation) and set
+# api_key['BearerToken'] + api_key_prefix['BearerToken'] = 'Bearer' directly.
+_SA_TOKEN = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+_SA_CERT  = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 
 
 def _api_client() -> client.ApiClient:
-    """Build ApiClient fresh per call. In-cluster: re-reads SA token to handle k3s rotation."""
+    """Build ApiClient fresh per call. In-cluster: reads SA token from file every time."""
     if os.getenv("KUBERNETES_SERVICE_HOST"):
-        config.load_incluster_config()
-        return client.ApiClient()
+        with open(_SA_TOKEN) as f:
+            token = f.read().strip()
+        cfg = client.Configuration(
+            host=f"https://{os.environ['KUBERNETES_SERVICE_HOST']}:{os.environ['KUBERNETES_SERVICE_PORT']}",
+            api_key={"BearerToken": token},
+            api_key_prefix={"BearerToken": "Bearer"},
+        )
+        cfg.ssl_ca_cert = _SA_CERT
+        return client.ApiClient(configuration=cfg)
     else:
         from app.config import settings
         kubeconfig_path = settings.kubeconfig or os.path.expanduser("~/.kube/config")
