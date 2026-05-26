@@ -10,10 +10,12 @@ LangGraph's create_react_agent manages the think/act loop automatically.
 
 import asyncio
 import logging
+import time
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 from langgraph.prebuilt import create_react_agent
 
+from app.collector import save_investigation
 from app.config import settings
 from app.notifier import notify_slack
 from app.prompts import SYSTEM_PROMPT
@@ -98,13 +100,23 @@ async def run_agent(alert: dict) -> None:
         HumanMessage(content=prompt),
     ]
 
+    tool_calls_used: list[str] = []
+    t_start = time.monotonic()
+
     try:
         result = await asyncio.wait_for(
             agent.ainvoke({"messages": messages}),
             timeout=settings.agent_timeout_seconds,
         )
         final = result["messages"][-1].content
-        logger.info("Investigation complete: alert=%s", alert_name)
+        # extract tool names from all AIMessage tool_calls in the conversation
+        for msg in result["messages"]:
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+                    if name:
+                        tool_calls_used.append(name)
+        logger.info("Investigation complete: alert=%s tools=%s", alert_name, tool_calls_used)
     except asyncio.TimeoutError:
         final = (
             f"Investigation timed out after {settings.agent_timeout_seconds}s. "
@@ -119,6 +131,9 @@ async def run_agent(alert: dict) -> None:
         else:
             final = f"Agent error: {err}. Manual investigation required."
             logger.exception("Agent error for alert=%s", alert_name)
+
+    duration = time.monotonic() - t_start
+    save_investigation(alert, final, duration, tool_calls_used)
 
     await notify_slack(
         alert_name=alert_name,

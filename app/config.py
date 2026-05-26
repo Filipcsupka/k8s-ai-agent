@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     enable_auto_apply: bool = False
     agent_timeout_seconds: int = 120
     max_concurrent_investigations: int = 3
+    investigations_dir: str = "/data/investigations"
 
     class Config:
         env_file = ".env"
