@@ -112,8 +112,13 @@ async def run_agent(alert: dict) -> None:
         )
         logger.warning("Agent timed out for alert=%s", alert_name)
     except Exception as e:
-        final = f"Agent error: {e}. Manual investigation required."
-        logger.exception("Agent error for alert=%s", alert_name)
+        err = str(e)
+        if "ConnectError" in type(e).__name__ or "Connection" in err:
+            final = f"Cannot reach Ollama at {settings.ollama_base_url}. Check Ollama service is running."
+            logger.error("Ollama unreachable for alert=%s: %s", alert_name, err)
+        else:
+            final = f"Agent error: {err}. Manual investigation required."
+            logger.exception("Agent error for alert=%s", alert_name)
 
     await notify_slack(
         alert_name=alert_name,

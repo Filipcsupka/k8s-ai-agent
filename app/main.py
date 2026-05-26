@@ -29,11 +29,25 @@ app = FastAPI(
 # Semaphore limits concurrent investigations to avoid hammering Ollama
 import asyncio
 _semaphore = asyncio.Semaphore(settings.max_concurrent_investigations)
+_in_flight: set[str] = set()
+
+
+def _alert_key(alert: dict) -> str:
+    labels = alert.get("labels", {})
+    return f"{labels.get('alertname')}|{labels.get('namespace')}|{labels.get('pod', '')}"
 
 
 async def _gated_run(alert: dict) -> None:
-    async with _semaphore:
-        await run_agent(alert)
+    key = _alert_key(alert)
+    if key in _in_flight:
+        logger.info("Dedup: skipping %s (already in flight)", key)
+        return
+    _in_flight.add(key)
+    try:
+        async with _semaphore:
+            await run_agent(alert)
+    finally:
+        _in_flight.discard(key)
 
 
 # ── Models ────────────────────────────────────────────────────────────────────

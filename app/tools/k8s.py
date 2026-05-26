@@ -5,9 +5,12 @@ kubeconfig file for local dev.
 """
 
 import json
+import logging
 import os
 from kubernetes import client, config
 from langchain_core.tools import tool
+
+logger = logging.getLogger(__name__)
 
 # k3s uses projected (bound) service account tokens that rotate.
 # Global config caches the token at import time → goes stale → 401.
@@ -32,9 +35,9 @@ def _api_client() -> client.ApiClient:
         cfg.ssl_ca_cert = _SA_CERT
         return client.ApiClient(configuration=cfg)
     else:
-        config.load_kube_config(
-            config_file=os.getenv("KUBECONFIG", os.path.expanduser("~/.kube/config"))
-        )
+        from app.config import settings
+        kubeconfig_path = settings.kubeconfig or os.path.expanduser("~/.kube/config")
+        config.load_kube_config(config_file=kubeconfig_path)
         return client.ApiClient()
 
 
@@ -44,6 +47,12 @@ def _core() -> client.CoreV1Api:
 
 def _apps() -> client.AppsV1Api:
     return client.AppsV1Api(api_client=_api_client())
+
+
+def _log_tool(name: str, result: str) -> str:
+    preview = result[:200].replace("\n", " ")
+    logger.info("[tool] %s → %s%s", name, preview, "…" if len(result) > 200 else "")
+    return result
 
 
 @tool
@@ -61,9 +70,9 @@ def get_pod_logs(namespace: str, pod_name: str, container: str = "", lines: int 
         if container:
             kwargs["container"] = container
         logs = _core().read_namespaced_pod_log(**kwargs)
-        return logs.strip() or "(no log output)"
+        return _log_tool("get_pod_logs", logs.strip() or "(no log output)")
     except Exception as e:
-        return f"ERROR getting logs for {namespace}/{pod_name}: {e}"
+        return _log_tool("get_pod_logs", f"ERROR getting logs for {namespace}/{pod_name}: {e}")
 
 
 @tool
@@ -82,9 +91,9 @@ def get_previous_pod_logs(namespace: str, pod_name: str, container: str = "", li
         if container:
             kwargs["container"] = container
         logs = _core().read_namespaced_pod_log(**kwargs)
-        return logs.strip() or "(no previous logs)"
+        return _log_tool("get_previous_pod_logs", logs.strip() or "(no previous logs)")
     except Exception as e:
-        return f"ERROR getting previous logs for {namespace}/{pod_name}: {e}"
+        return _log_tool("get_previous_pod_logs", f"ERROR getting previous logs for {namespace}/{pod_name}: {e}")
 
 
 @tool
@@ -110,17 +119,20 @@ def get_events(namespace: str, resource_name: str = "") -> str:
         items = sorted(items, key=ts, reverse=True)[:25]
 
         if not items:
-            return f"(no events in namespace={namespace}" + (f" for {resource_name}" if resource_name else "") + ")"
+            out = f"(no events in namespace={namespace}" + (f" for {resource_name}" if resource_name else "") + ")"
+            return _log_tool("get_events", out)
 
         lines = []
         for e in items:
+            ts = e.last_timestamp or e.event_time or ""
             lines.append(
                 f"[{e.type}] {e.reason}: {e.message} "
-                f"(object: {e.involved_object.kind}/{e.involved_object.name}, count: {e.count})"
+                f"(object: {e.involved_object.kind}/{e.involved_object.name}, "
+                f"count: {e.count}, last: {ts})"
             )
-        return "\n".join(lines)
+        return _log_tool("get_events", "\n".join(lines))
     except Exception as e:
-        return f"ERROR getting events in {namespace}: {e}"
+        return _log_tool("get_events", f"ERROR getting events in {namespace}: {e}")
 
 
 @tool
@@ -180,9 +192,9 @@ def describe_pod(namespace: str, pod_name: str) -> str:
             "containers": container_info,
             "resources": resource_info,
         }
-        return json.dumps(result, indent=2, default=str)
+        return _log_tool("describe_pod", json.dumps(result, indent=2, default=str))
     except Exception as e:
-        return f"ERROR describing pod {namespace}/{pod_name}: {e}"
+        return _log_tool("describe_pod", f"ERROR describing pod {namespace}/{pod_name}: {e}")
 
 
 @tool
@@ -216,9 +228,9 @@ def describe_deployment(namespace: str, name: str) -> str:
                 for c in dep.spec.template.spec.containers
             ],
         }
-        return json.dumps(result, indent=2, default=str)
+        return _log_tool("describe_deployment", json.dumps(result, indent=2, default=str))
     except Exception as e:
-        return f"ERROR describing deployment {namespace}/{name}: {e}"
+        return _log_tool("describe_deployment", f"ERROR describing deployment {namespace}/{name}: {e}")
 
 
 @tool
@@ -250,9 +262,9 @@ def list_pods(namespace: str, label_selector: str = "") -> str:
                 f"ready={ready_count}/{total_count} restarts={restarts} "
                 f"node={pod.spec.node_name}"
             )
-        return "\n".join(lines)
+        return _log_tool("list_pods", "\n".join(lines))
     except Exception as e:
-        return f"ERROR listing pods in {namespace}: {e}"
+        return _log_tool("list_pods", f"ERROR listing pods in {namespace}: {e}")
 
 
 @tool
@@ -274,9 +286,9 @@ def get_node_status() -> str:
                 f"cpu={cap.get('cpu')} memory={cap.get('memory')} "
                 f"taints=[{', '.join(taints)}]"
             )
-        return "\n".join(lines)
+        return _log_tool("get_node_status", "\n".join(lines))
     except Exception as e:
-        return f"ERROR getting node status: {e}"
+        return _log_tool("get_node_status", f"ERROR getting node status: {e}")
 
 
 @tool
@@ -303,6 +315,6 @@ def get_resource_usage(namespace: str) -> str:
                     f"{pod_name}/{container['name']}: "
                     f"cpu={usage.get('cpu', 'n/a')} memory={usage.get('memory', 'n/a')}"
                 )
-        return "\n".join(lines) or f"(no metrics available for namespace={namespace})"
+        return _log_tool("get_resource_usage", "\n".join(lines) or f"(no metrics available for namespace={namespace})")
     except Exception as e:
-        return f"ERROR getting resource usage (metrics-server may not be installed): {e}"
+        return _log_tool("get_resource_usage", f"ERROR getting resource usage (metrics-server may not be installed): {e}")
