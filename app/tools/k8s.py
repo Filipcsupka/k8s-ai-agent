@@ -12,28 +12,17 @@ from langchain_core.tools import tool
 
 logger = logging.getLogger(__name__)
 
-# k3s uses projected (bound) service account tokens that rotate.
-# Global config caches the token at import time → goes stale → 401.
-# Fix: read token fresh from file on every API client creation.
-_SA_TOKEN = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-_SA_CERT  = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+# k3s uses projected (bound) service account tokens that rotate every hour.
+# Fix: call load_incluster_config() on EVERY _api_client() call — it reads the
+# token file fresh each time and sets all TLS/hostname settings correctly.
+# Do NOT call it once at import time (token goes stale → 401 after rotation).
 
 
 def _api_client() -> client.ApiClient:
-    """Build ApiClient. In-cluster: reads SA token fresh every call (handles rotation)."""
+    """Build ApiClient fresh per call. In-cluster: re-reads SA token to handle k3s rotation."""
     if os.getenv("KUBERNETES_SERVICE_HOST"):
-        host = (
-            f"https://{os.environ['KUBERNETES_SERVICE_HOST']}"
-            f":{os.environ['KUBERNETES_SERVICE_PORT_HTTPS']}"
-        )
-        with open(_SA_TOKEN) as f:
-            token = f.read().strip()
-        cfg = client.Configuration(
-            host=host,
-            api_key={"authorization": f"Bearer {token}"},
-        )
-        cfg.ssl_ca_cert = _SA_CERT
-        return client.ApiClient(configuration=cfg)
+        config.load_incluster_config()
+        return client.ApiClient()
     else:
         from app.config import settings
         kubeconfig_path = settings.kubeconfig or os.path.expanduser("~/.kube/config")
