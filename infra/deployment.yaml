@@ -63,3 +63,18 @@ spec:
               port: 8000
             initialDelaySeconds: 10
             periodSeconds: 10
+          env:
+            - name: CHROMA_HOST
+              value: "chromadb.ai-chat.svc.cluster.local"
+            - name: CHROMA_PORT
+              value: "8000"
+            - name: CHROMA_COLLECTION
+              value: "k8s-runbooks"
+          volumeMounts:
+            - name: investigations
+              mountPath: /data/investigations
+
+      volumes:
+        - name: investigations
+          persistentVolumeClaim:
+            claimName: agent-investigations

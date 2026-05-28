@@ -1,0 +1,57 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: k8s-ai-agent-ingest
+  namespace: ai-agent
+spec:
+  schedule: "*/30 * * * *"   # every 30 minutes
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+
+          nodeSelector:
+            accelerator: nvidia
+          tolerations:
+            - key: nvidia.com/gpu
+              operator: Exists
+              effect: NoSchedule
+
+          containers:
+            - name: ingest
+              image: ghcr.io/filipcsupka/k8s-ai-agent:latest
+              command: ["python", "-m", "scripts.ingest_to_chroma"]
+              env:
+                - name: INVESTIGATIONS_DIR
+                  value: "/data/investigations"
+                - name: CHROMA_HOST
+                  value: "chromadb.ai-chat.svc.cluster.local"
+                - name: CHROMA_PORT
+                  value: "8000"
+                - name: OLLAMA_BASE_URL
+                  value: "http://ollama.ai-chat.svc.cluster.local:11434"
+                - name: EMBED_MODEL
+                  value: "nomic-embed-text"
+                - name: CHROMA_COLLECTION
+                  value: "k8s-runbooks"
+              resources:
+                requests:
+                  memory: "256Mi"
+                  cpu: "100m"
+                limits:
+                  memory: "512Mi"
+                  cpu: "300m"
+              volumeMounts:
+                - name: investigations
+                  mountPath: /data/investigations
+                  readOnly: true
+
+          volumes:
+            - name: investigations
+              persistentVolumeClaim:
+                claimName: agent-investigations
+                readOnly: true

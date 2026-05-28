@@ -18,7 +18,9 @@ from langgraph.prebuilt import create_react_agent
 from app.collector import save_investigation
 from app.config import settings
 from app.notifier import notify_slack
+from app.tracing import get_langfuse_handler
 from app.prompts import SYSTEM_PROMPT
+from app.tools.rag import search_past_diagnoses
 from app.tools.k8s import (
     get_pod_logs,
     get_previous_pod_logs,
@@ -32,8 +34,9 @@ from app.tools.k8s import (
 
 logger = logging.getLogger(__name__)
 
-# All read-only tools available to the agent in Phase 1
+# RAG tool first — check past diagnoses before live investigation
 TOOLS = [
+    search_past_diagnoses,
     list_pods,
     get_events,
     describe_pod,
@@ -103,9 +106,15 @@ async def run_agent(alert: dict) -> None:
     tool_calls_used: list[str] = []
     t_start = time.monotonic()
 
+    langfuse_handler = get_langfuse_handler(
+        name=f"investigate-{alert_name}",
+        metadata={"namespace": namespace, "pod": pod, "severity": labels.get("severity", "")},
+    )
+    invoke_kwargs: dict = {"callbacks": [langfuse_handler]} if langfuse_handler else {}
+
     try:
         result = await asyncio.wait_for(
-            agent.ainvoke({"messages": messages}),
+            agent.ainvoke({"messages": messages}, config=invoke_kwargs),
             timeout=settings.agent_timeout_seconds,
         )
         final = result["messages"][-1].content
@@ -133,6 +142,10 @@ async def run_agent(alert: dict) -> None:
             logger.exception("Agent error for alert=%s", alert_name)
 
     duration = time.monotonic() - t_start
+
+    if langfuse_handler:
+        langfuse_handler.flush()
+
     save_investigation(alert, final, duration, tool_calls_used)
 
     await notify_slack(
