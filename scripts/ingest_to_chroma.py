@@ -137,7 +137,6 @@ def main() -> None:
     collection = chroma.get_or_create_collection(
         name=COLLECTION,
         embedding_function=embed_fn,
-        metadata={"hnsw:space": "cosine"},
     )
 
     # --- Runbooks (always ingest — authoritative, no review gate) ---

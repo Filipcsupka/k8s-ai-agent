@@ -31,7 +31,6 @@ def _get_collection():
         _collection = client.get_or_create_collection(
             name=settings.chroma_collection,
             embedding_function=embed_fn,
-            metadata={"hnsw:space": "cosine"},
         )
         return _collection
     except Exception as e:
