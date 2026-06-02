@@ -115,13 +115,21 @@ def load_runbooks(runbooks_dir: str) -> list[tuple[str, str, dict]]:
     return runbooks
 
 
-def _upsert_batch(collection, ids: list, documents: list, metadatas: list, label: str) -> None:
+def _embed(embed_fn, texts: list[str]) -> list[list[float]]:
+    """Call embedding function directly — avoids passing it to ChromaDB server."""
+    return embed_fn(texts)
+
+
+def _upsert_batch(collection, embed_fn, ids: list, documents: list, metadatas: list, label: str) -> None:
     batch = 50
     ingested = 0
     for i in range(0, len(ids), batch):
+        batch_docs = documents[i:i+batch]
+        embeddings = _embed(embed_fn, batch_docs)
         collection.upsert(
             ids=ids[i:i+batch],
-            documents=documents[i:i+batch],
+            embeddings=embeddings,
+            documents=batch_docs,
             metadatas=metadatas[i:i+batch],
         )
         ingested += len(ids[i:i+batch])
@@ -134,17 +142,17 @@ def main() -> None:
         model_name=EMBED_MODEL,
     )
     chroma = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
-    collection = chroma.get_or_create_collection(
-        name=COLLECTION,
-        embedding_function=embed_fn,
-    )
+    # Do NOT pass embedding_function — chromadb 0.6 serialises it and sends to
+    # the server which fails to parse the config (_type KeyError). Embeddings
+    # are computed client-side and passed as raw vectors instead.
+    collection = chroma.get_or_create_collection(name=COLLECTION)
 
     # --- Runbooks (always ingest — authoritative, no review gate) ---
     runbooks = load_runbooks(RUNBOOKS_DIR)
     if runbooks:
         logger.info("Ingesting %d runbooks from %s", len(runbooks), RUNBOOKS_DIR)
         _upsert_batch(
-            collection,
+            collection, embed_fn,
             ids=[r[0] for r in runbooks],
             documents=[r[1] for r in runbooks],
             metadatas=[r[2] for r in runbooks],
@@ -158,7 +166,7 @@ def main() -> None:
     if approved:
         logger.info("Ingesting %d approved investigations from %s", len(approved), INVESTIGATIONS_DIR)
         _upsert_batch(
-            collection,
+            collection, embed_fn,
             ids=[fname for fname, _ in approved],
             documents=[build_document(rec) for _, rec in approved],
             metadatas=[build_metadata(rec) for _, rec in approved],

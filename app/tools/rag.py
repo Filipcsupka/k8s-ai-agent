@@ -11,31 +11,32 @@ from langchain_core.tools import tool
 logger = logging.getLogger(__name__)
 
 _collection = None
+_embed_fn = None
 
 
 def _get_collection():
-    global _collection
+    global _collection, _embed_fn
     if _collection is not None:
-        return _collection
+        return _collection, _embed_fn
 
     try:
         import chromadb
         from chromadb.utils.embedding_functions import OllamaEmbeddingFunction
         from app.config import settings
 
-        embed_fn = OllamaEmbeddingFunction(
+        # Do NOT pass embedding_function to get_or_create_collection — chromadb
+        # 0.6 serialises it and sends to the server which fails (_type KeyError).
+        # Embeddings computed client-side; query uses query_embeddings= instead.
+        _embed_fn = OllamaEmbeddingFunction(
             url=f"{settings.chroma_ollama_embed_url}/api/embeddings",
             model_name=settings.chroma_embed_model,
         )
         client = chromadb.HttpClient(host=settings.chroma_host, port=settings.chroma_port)
-        _collection = client.get_or_create_collection(
-            name=settings.chroma_collection,
-            embedding_function=embed_fn,
-        )
-        return _collection
+        _collection = client.get_or_create_collection(name=settings.chroma_collection)
+        return _collection, _embed_fn
     except Exception as e:
         logger.warning("ChromaDB unavailable: %s", e)
-        return None
+        return None, None
 
 
 @tool
@@ -53,7 +54,7 @@ def search_past_diagnoses(query: str) -> str:
         Top matching past diagnoses with their recommended fixes,
         or empty string if no relevant history found.
     """
-    col = _get_collection()
+    col, embed_fn = _get_collection()
     if col is None:
         return ""
 
@@ -62,8 +63,9 @@ def search_past_diagnoses(query: str) -> str:
         if count == 0:
             return ""
 
+        query_embedding = embed_fn([query])
         results = col.query(
-            query_texts=[query],
+            query_embeddings=query_embedding,
             n_results=min(3, count),
             include=["documents", "metadatas", "distances"],
         )
