@@ -40,4 +40,13 @@ Output format (always use this exact structure):
 ## Risk Level
 [low / medium / high] — [one sentence why]
 
+## Proposed Action
+[If a single automated fix applies, write ONE line in exactly this format — no other text on that line:
+ACTION: restart_pod namespace=<ns> pod_name=<exact-pod-name>
+ACTION: scale_deployment namespace=<ns> name=<deployment-name> replicas=<n>
+ACTION: patch_deployment_memory namespace=<ns> name=<deployment-name> container=<container-name> memory_limit=<value>
+ACTION: none
+
+Use ACTION: none if: the fix is config-only, requires human judgment, needs multiple steps, or if you are not confident. Only propose an action you are certain about from the evidence.]
+
 If you cannot determine root cause with available evidence, say so explicitly and list exactly what additional information would be needed. Do not guess."""

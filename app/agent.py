@@ -10,6 +10,7 @@ LangGraph's create_react_agent manages the think/act loop automatically.
 
 import asyncio
 import logging
+import re
 import time
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
@@ -33,6 +34,25 @@ from app.tools.k8s import (
 )
 
 logger = logging.getLogger(__name__)
+
+_ACTION_RE = re.compile(r"^ACTION:\s*(\S+)\s*(.*?)\s*$", re.MULTILINE)
+
+
+def _extract_proposed_action(text: str) -> dict | None:
+    """Parse 'ACTION: <name> key=val key=val' from agent output. Returns None if none/invalid."""
+    m = _ACTION_RE.search(text)
+    if not m:
+        return None
+    action = m.group(1)
+    if action == "none":
+        return None
+    params_str = m.group(2)
+    try:
+        params = dict(p.split("=", 1) for p in params_str.split() if "=" in p)
+    except Exception:
+        return None
+    return {"action": action, **params}
+
 
 # RAG tool first — check past diagnoses before live investigation
 TOOLS = [
@@ -146,6 +166,10 @@ async def run_agent(alert: dict) -> None:
     if langfuse_handler:
         langfuse_handler.flush()
 
+    proposed_action = _extract_proposed_action(final)
+    if proposed_action:
+        logger.info("Proposed action: %s", proposed_action)
+
     save_investigation(alert, final, duration, tool_calls_used)
 
     await notify_slack(
@@ -153,4 +177,5 @@ async def run_agent(alert: dict) -> None:
         namespace=namespace,
         pod=pod,
         diagnosis=final,
+        proposed_action=proposed_action,
     )

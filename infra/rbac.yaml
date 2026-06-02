@@ -1,6 +1,6 @@
-# Phase 1: read-only ClusterRole
-# The agent needs cluster-wide read access because alerts can come from any namespace.
-# Write permissions are NOT granted here — Phase 3 will add a separate narrow Role.
+# Phase 1+3: read-only cluster-wide access + narrow write ops for /apply endpoint.
+# Write verbs are limited to pods (delete for restart) and apps workloads (patch for scale/memory).
+# PVCs, secrets, nodes are intentionally excluded — see apply.py BLACKLISTED_RESOURCES.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -17,6 +17,10 @@ rules:
       - endpoints
       - configmaps
     verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources:
+      - pods
+    verbs: [delete]
   - apiGroups: [apps]
     resources:
       - deployments
@@ -24,6 +28,11 @@ rules:
       - statefulsets
       - daemonsets
     verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources:
+      - deployments
+      - statefulsets
+    verbs: [patch, update]
   - apiGroups: [metrics.k8s.io]
     resources:
       - pods
