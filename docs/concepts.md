@@ -163,6 +163,78 @@ Each alert investigation is run as a background task (`background_tasks.add_task
 
 ---
 
+## 8. RAG — Retrieval-Augmented Generation
+
+Without RAG, the agent starts every investigation from zero. With RAG it checks
+institutional memory first — past diagnoses and runbooks — before touching the
+cluster.
+
+```
+Alert arrives
+  → search_past_diagnoses("KubePodCrashLooping ai-chat OOMKilled")
+  → ChromaDB returns top-3 similar past diagnoses
+  → If similarity > 50%: agent uses them as starting hypothesis
+  → Verifies with 1-2 live tool calls instead of full investigation
+  → Much faster, more accurate (uses what worked before)
+```
+
+### What's in the RAG DB
+
+**Runbooks** (`runbooks/*.md`) — ingested unconditionally on every CronJob run.
+These are the "textbook" knowledge: what each alert means, which tools to call,
+common causes and their fixes.
+
+**Past investigations** (`/data/investigations/*.json`) — ingested only when a
+human marks `reviewed=true` AND `correct=true`. These are real incidents from
+your cluster with confirmed diagnoses.
+
+### How to grow the knowledge base
+
+1. Alert fires → agent investigates → JSON saved to PVC
+2. You review the JSON, set `reviewed=true, correct=true`
+3. Next CronJob run (every 30 min) ingests it into ChromaDB
+4. Future similar alerts hit this knowledge instantly
+
+Add more runbooks in `runbooks/` as you encounter new alert types.
+The format is free markdown — the LLM reads it as-is.
+
+### ChromaDB version pinning (important!)
+
+ChromaDB breaks across minor versions. Server, k8s-ai-agent client, and rag-api
+client must ALL be the same exact version. Currently `chromadb==0.6.3`.
+
+Never use `>=` — pip resolves to latest which will be incompatible.
+
+---
+
+## 9. Human-in-the-Loop Approval Gate (Phase 3)
+
+The agent never applies fixes automatically. The flow is:
+
+```
+Agent diagnoses → proposes one ACTION → Slack shows curl command
+  → Human reads diagnosis → decides to approve or ignore
+  → Human copies curl command → POST /apply executes the fix
+```
+
+The `ACTION:` line in the agent output is parsed by `agent.py` and passed to
+the notifier. Notifier formats it as a `kubectl exec` command in the Slack message.
+
+The `/apply` endpoint is the gate — it only runs if `ENABLE_AUTO_APPLY=true`.
+Since the service is ClusterIP-only (not public), only someone with cluster
+access can call it.
+
+**Supported actions:**
+- `restart_pod` — deletes pod (controller recreates)
+- `scale_deployment` — patches replica count
+- `patch_deployment_memory` — updates memory limit (OOMKilled fix)
+
+**Future (Phase 4):** Slack interactive buttons — click Approve/Deny directly in
+Slack without copying a curl command. Requires a Slack app with interactive
+components and a public endpoint (Tailscale Funnel or ingress).
+
+---
+
 ## Further Reading
 
 - [LangGraph docs](https://langchain-ai.github.io/langgraph/) — especially "ReAct agent" tutorial
