@@ -8,5 +8,5 @@ kubernetes>=30.0.0
 httpx>=0.27.0
 pydantic-settings>=2.5.0
 python-dotenv>=1.0.0
-chromadb==0.6.3
+chromadb==1.4.4
 langfuse>=2.0.0
