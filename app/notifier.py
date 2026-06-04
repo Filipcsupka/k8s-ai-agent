@@ -8,6 +8,7 @@ exact /apply curl command so the operator can approve with one copy-paste.
 
 import json
 import logging
+from typing import Optional
 import httpx
 from app.config import settings
 
@@ -34,7 +35,7 @@ async def notify_slack(
     namespace: str,
     pod: str,
     diagnosis: str,
-    proposed_action: dict | None = None,
+    proposed_action: Optional[dict] = None,
 ) -> None:
     truncated = diagnosis[:SLACK_CHAR_LIMIT] + ("…" if len(diagnosis) > SLACK_CHAR_LIMIT else "")
 

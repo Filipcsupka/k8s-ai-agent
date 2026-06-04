@@ -12,6 +12,7 @@ import asyncio
 import logging
 import re
 import time
+from typing import Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 from langgraph.prebuilt import create_react_agent
@@ -21,7 +22,7 @@ from app.config import settings
 from app.notifier import notify_slack
 from app.tracing import get_langfuse_handler
 from app.prompts import SYSTEM_PROMPT
-from app.tools.rag import search_past_diagnoses
+from app.tools.rag import lookup_runbook, search_past_diagnoses, check_high_similarity_match
 from app.tools.k8s import (
     get_pod_logs,
     get_previous_pod_logs,
@@ -38,7 +39,7 @@ logger = logging.getLogger(__name__)
 _ACTION_RE = re.compile(r"^ACTION:\s*(\S+)\s*(.*?)\s*$", re.MULTILINE)
 
 
-def _extract_proposed_action(text: str) -> dict | None:
+def _extract_proposed_action(text: str) -> Optional[dict]:
     """Parse 'ACTION: <name> key=val key=val' from agent output. Returns None if none/invalid."""
     m = _ACTION_RE.search(text)
     if not m:
@@ -54,8 +55,9 @@ def _extract_proposed_action(text: str) -> dict | None:
     return {"action": action, **params}
 
 
-# RAG tool first — check past diagnoses before live investigation
+# lookup_runbook first (direct metadata, no threshold), then past investigations, then live k8s
 TOOLS = [
+    lookup_runbook,
     search_past_diagnoses,
     list_pods,
     get_events,
@@ -125,6 +127,32 @@ async def run_agent(alert: dict) -> None:
 
     tool_calls_used: list[str] = []
     t_start = time.monotonic()
+
+    # Short-circuit: if a very similar past investigation exists (≥85% match),
+    # skip LangGraph entirely and serve the cached diagnosis.
+    rag_hit = check_high_similarity_match(alert_name, namespace)
+    if rag_hit:
+        cached_diagnosis, similarity = rag_hit
+        logger.info(
+            "RAG short-circuit: %s/%s → %.1f%% match — skipping agent",
+            alert_name, namespace, similarity,
+        )
+        final = (
+            f"*Resolved from past investigation ({similarity}% similarity match — no live tool calls needed)*\n\n"
+            + cached_diagnosis
+        )
+        tool_calls_used = ["check_high_similarity_match"]
+        duration = time.monotonic() - t_start
+        proposed_action = _extract_proposed_action(final)
+        save_investigation(alert, final, duration, tool_calls_used)
+        await notify_slack(
+            alert_name=alert_name,
+            namespace=namespace,
+            pod=pod,
+            diagnosis=final,
+            proposed_action=proposed_action,
+        )
+        return
 
     langfuse_handler = get_langfuse_handler(
         name=f"investigate-{alert_name}",
