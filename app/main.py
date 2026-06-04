@@ -7,7 +7,9 @@ Endpoints:
   POST /investigate  — manual trigger for testing (send an alert payload directly)
 """
 
+import json
 import logging
+import os
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
@@ -154,6 +156,69 @@ async def apply_action(req: ApplyRequest):
         raise HTTPException(status_code=500, detail=result)
 
     return {"status": "applied", "action": req.action, "result": result}
+
+
+@app.get("/investigations")
+def list_investigations():
+    """List all saved investigations with review status. Use to find candidates to approve into RAG."""
+    inv_dir = settings.investigations_dir
+    out = []
+    try:
+        for fname in sorted(os.listdir(inv_dir)):
+            if not fname.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(inv_dir, fname)) as f:
+                    rec = json.load(f)
+                out.append({
+                    "id": fname,
+                    "timestamp": rec.get("timestamp"),
+                    "alert_name": rec.get("alert_name"),
+                    "namespace": rec.get("namespace"),
+                    "pod": rec.get("pod"),
+                    "duration_sec": rec.get("duration_sec"),
+                    "tool_calls": rec.get("tool_calls"),
+                    "reviewed": rec.get("reviewed"),
+                    "correct": rec.get("correct"),
+                    "diagnosis_preview": (rec.get("diagnosis") or "")[:300],
+                })
+            except Exception:
+                pass
+    except FileNotFoundError:
+        pass
+    return {"total": len(out), "investigations": out}
+
+
+def _patch_investigation(filename: str, patch: dict) -> dict:
+    inv_dir = settings.investigations_dir
+    safe = os.path.basename(filename)
+    if not safe.endswith(".json"):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    path = os.path.join(inv_dir, safe)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail=f"Investigation {safe} not found")
+    with open(path) as f:
+        rec = json.load(f)
+    rec.update(patch)
+    with open(path, "w") as f:
+        json.dump(rec, f, indent=2)
+    return rec
+
+
+@app.post("/investigations/{filename}/approve")
+def approve_investigation(filename: str, notes: str = ""):
+    """Mark investigation as reviewed=true, correct=true. Ingest CronJob will pick it up for RAG."""
+    rec = _patch_investigation(filename, {"reviewed": True, "correct": True, "notes": notes})
+    logger.info("Approved: %s", filename)
+    return {"status": "approved", "id": filename, "alert_name": rec.get("alert_name")}
+
+
+@app.post("/investigations/{filename}/reject")
+def reject_investigation(filename: str, notes: str = ""):
+    """Mark investigation as reviewed=true, correct=false. Excluded from RAG."""
+    rec = _patch_investigation(filename, {"reviewed": True, "correct": False, "notes": notes})
+    logger.info("Rejected: %s", filename)
+    return {"status": "rejected", "id": filename, "alert_name": rec.get("alert_name")}
 
 
 @app.post("/investigate")

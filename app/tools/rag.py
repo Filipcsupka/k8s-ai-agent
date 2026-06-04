@@ -26,6 +26,10 @@ ALERT_TO_RUNBOOK: dict[str, str] = {
     "KubeImagePullError": "imagepull",
     "ImagePullBackOff": "imagepull",
     "ErrImagePull": "imagepull",
+    "KubeDeploymentReplicasMismatch": "replicasmismatch",
+    "KubeDeploymentRolloutStuck": "rolloutstuck",
+    "KubePodNotReady": "podnotready",
+    "PodNotReady": "podnotready",
 }
 
 
