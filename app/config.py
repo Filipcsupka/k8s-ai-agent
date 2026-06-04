@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://ollama.ai-chat.svc.cluster.local:11434"
     ollama_model: str = "qwen3:8b"
     slack_webhook_url: str = ""
+    discord_webhook_url: str = ""
     kubeconfig: str = ""
     chroma_host: str = "chromadb.ai-chat.svc.cluster.local"
     chroma_ollama_embed_url: str = "http://ollama.ai-chat.svc.cluster.local:11434"
