@@ -17,9 +17,6 @@ class Settings(BaseSettings):
     max_concurrent_investigations: int = 3
     investigations_dir: str = "/data/investigations"
     max_investigations_per_scenario: int = 2
-    langfuse_public_key: str = ""
-    langfuse_secret_key: str = ""
-    langfuse_host: str = "https://langfuse.filipcsupka.online"
 
     class Config:
         env_file = ".env"

@@ -20,7 +20,6 @@ from langgraph.prebuilt import create_react_agent
 from app.collector import save_investigation
 from app.config import settings
 from app.notifier import notify_slack
-from app.tracing import get_langfuse_handler
 from app.prompts import SYSTEM_PROMPT
 from app.tools.rag import lookup_runbook, search_past_diagnoses, check_high_similarity_match
 from app.tools.k8s import (
@@ -154,11 +153,7 @@ async def run_agent(alert: dict) -> None:
         )
         return
 
-    langfuse_handler = get_langfuse_handler(
-        name=f"investigate-{alert_name}",
-        metadata={"namespace": namespace, "pod": pod, "severity": labels.get("severity", "")},
-    )
-    invoke_kwargs: dict = {"callbacks": [langfuse_handler]} if langfuse_handler else {}
+    invoke_kwargs: dict = {}
 
     try:
         result = await asyncio.wait_for(
@@ -190,9 +185,6 @@ async def run_agent(alert: dict) -> None:
             logger.exception("Agent error for alert=%s", alert_name)
 
     duration = time.monotonic() - t_start
-
-    if langfuse_handler:
-        langfuse_handler.flush()
 
     proposed_action = _extract_proposed_action(final)
     if proposed_action:
