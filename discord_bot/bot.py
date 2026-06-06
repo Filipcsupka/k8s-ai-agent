@@ -27,6 +27,58 @@ class Bot(commands.Bot):
 bot = Bot()
 
 
+@bot.event
+async def on_interaction(interaction: discord.Interaction):
+    if interaction.type != discord.InteractionType.component:
+        return
+    if interaction.data.get("component_type") != 2:  # button
+        return
+
+    custom_id: str = interaction.data.get("custom_id", "")
+    await interaction.response.defer(ephemeral=True)
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        if custom_id.startswith("approve:"):
+            inv_id = custom_id[len("approve:"):]
+            r = await client.post(f"{AGENT_URL}/investigations/{inv_id}/approve")
+            if r.status_code == 200:
+                await interaction.followup.send(f"✅ Approved `{inv_id}` — will be ingested into RAG.", ephemeral=True)
+            else:
+                await interaction.followup.send(f"Failed ({r.status_code}): {r.text}", ephemeral=True)
+
+        elif custom_id.startswith("reject:"):
+            inv_id = custom_id[len("reject:"):]
+            r = await client.post(f"{AGENT_URL}/investigations/{inv_id}/reject")
+            if r.status_code == 200:
+                await interaction.followup.send(f"❌ Rejected `{inv_id}`.", ephemeral=True)
+            else:
+                await interaction.followup.send(f"Failed ({r.status_code}): {r.text}", ephemeral=True)
+
+        elif custom_id.startswith("apply:"):
+            inv_id = custom_id[len("apply:"):]
+            r = await client.get(f"{AGENT_URL}/investigations/{inv_id}")
+            if r.status_code != 200:
+                await interaction.followup.send(f"Could not load investigation ({r.status_code}).", ephemeral=True)
+                return
+            inv = r.json()
+            action = inv.get("proposed_action")
+            if not action:
+                await interaction.followup.send("No proposed_action stored in investigation.", ephemeral=True)
+                return
+            r2 = await client.post(f"{AGENT_URL}/apply", json=action)
+            if r2.status_code == 200:
+                result = r2.json()
+                await interaction.followup.send(
+                    f"⚡ Applied `{action.get('action')}`: {result.get('message', 'done')}",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.followup.send(f"Apply failed ({r2.status_code}): {r2.text}", ephemeral=True)
+
+        else:
+            log.warning("Unknown button custom_id: %s", custom_id)
+
+
 @bot.tree.command(name="investigate", description="Trigger AI investigation of a namespace")
 @app_commands.describe(namespace="Namespace to investigate (default: chaos)")
 async def investigate(interaction: discord.Interaction, namespace: str = "chaos"):

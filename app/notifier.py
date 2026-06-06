@@ -1,7 +1,7 @@
 """
-Notifier — sends investigation results to Discord (native embeds) or Slack.
+Notifier — sends investigation results to Discord (native embeds + buttons) or Slack.
 
-Priority: Discord → Slack → stdout.
+Priority: Discord bot API (with buttons) → Discord webhook (no buttons) → Slack → stdout.
 """
 
 import json
@@ -19,6 +19,11 @@ SLACK_CHAR_LIMIT = 2500
 _COLOR_ALERT = 15158332    # red    #E74C3C
 _COLOR_ACTION = 15844367   # yellow #F1C40F
 _COLOR_INFO = 3447003      # blue   #3498DB
+
+# Discord component styles
+_STYLE_PRIMARY = 1   # blue
+_STYLE_SUCCESS = 3   # green
+_STYLE_DANGER = 4    # red
 
 _ACTION_DESCRIPTIONS: dict[str, str] = {
     "restart_pod": (
@@ -63,17 +68,14 @@ def _apply_snippet(action: dict) -> str:
     )
 
 
-async def _send_discord(
+def _build_embeds(
     alert_name: str,
     namespace: str,
     pod: str,
     diagnosis: str,
     proposed_action: Optional[dict],
-) -> None:
+) -> list[dict]:
     truncated = diagnosis[:DISCORD_CHAR_LIMIT] + ("…" if len(diagnosis) > DISCORD_CHAR_LIMIT else "")
-
-    pod_str = f" • pod `{pod}`" if pod else ""
-    content = f":rotating_light: **K8s Alert: {alert_name}** • namespace `{namespace}`{pod_str}"
 
     embeds = [
         {
@@ -101,6 +103,79 @@ async def _send_discord(
                 "footer": {"text": "Calls /apply on agent pod — only works if ENABLE_AUTO_APPLY=true"},
             }
         )
+
+    return embeds
+
+
+def _build_components(proposed_action: Optional[dict], investigation_id: Optional[str]) -> list[dict]:
+    if not investigation_id:
+        return []
+
+    buttons = [
+        {
+            "type": 2,
+            "style": _STYLE_SUCCESS,
+            "label": "Approve",
+            "emoji": {"name": "✅"},
+            "custom_id": f"approve:{investigation_id}",
+        },
+        {
+            "type": 2,
+            "style": _STYLE_DANGER,
+            "label": "Reject",
+            "emoji": {"name": "❌"},
+            "custom_id": f"reject:{investigation_id}",
+        },
+    ]
+
+    if proposed_action and proposed_action.get("action") not in (None, "none", "unknown"):
+        buttons.append({
+            "type": 2,
+            "style": _STYLE_PRIMARY,
+            "label": "Apply Fix",
+            "emoji": {"name": "⚡"},
+            "custom_id": f"apply:{investigation_id}",
+        })
+
+    return [{"type": 1, "components": buttons}]
+
+
+async def _send_discord_bot(
+    alert_name: str,
+    namespace: str,
+    pod: str,
+    diagnosis: str,
+    proposed_action: Optional[dict],
+    investigation_id: Optional[str],
+) -> None:
+    pod_str = f" • pod `{pod}`" if pod else ""
+    content = f":rotating_light: **K8s Alert: {alert_name}** • namespace `{namespace}`{pod_str}"
+
+    embeds = _build_embeds(alert_name, namespace, pod, diagnosis, proposed_action)
+    components = _build_components(proposed_action, investigation_id)
+
+    payload = {"content": content, "embeds": embeds, "components": components}
+    headers = {
+        "Authorization": f"Bot {settings.discord_bot_token}",
+        "Content-Type": "application/json",
+    }
+    url = f"https://discord.com/api/v10/channels/{settings.discord_channel_id}/messages"
+
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.post(url, json=payload, headers=headers)
+        resp.raise_for_status()
+
+
+async def _send_discord_webhook(
+    alert_name: str,
+    namespace: str,
+    pod: str,
+    diagnosis: str,
+    proposed_action: Optional[dict],
+) -> None:
+    pod_str = f" • pod `{pod}`" if pod else ""
+    content = f":rotating_light: **K8s Alert: {alert_name}** • namespace `{namespace}`{pod_str}"
+    embeds = _build_embeds(alert_name, namespace, pod, diagnosis, proposed_action)
 
     payload = {"content": content, "embeds": embeds}
     async with httpx.AsyncClient(timeout=10.0) as http:
@@ -164,13 +239,21 @@ async def notify_slack(
     pod: str,
     diagnosis: str,
     proposed_action: Optional[dict] = None,
+    investigation_id: Optional[str] = None,
 ) -> None:
-    if settings.discord_webhook_url:
+    if settings.discord_bot_token and settings.discord_channel_id:
         try:
-            await _send_discord(alert_name, namespace, pod, diagnosis, proposed_action)
+            await _send_discord_bot(alert_name, namespace, pod, diagnosis, proposed_action, investigation_id)
             return
         except Exception as e:
-            logger.error("Discord notification failed: %s", e)
+            logger.error("Discord bot notification failed: %s — falling back to webhook", e)
+
+    if settings.discord_webhook_url:
+        try:
+            await _send_discord_webhook(alert_name, namespace, pod, diagnosis, proposed_action)
+            return
+        except Exception as e:
+            logger.error("Discord webhook notification failed: %s", e)
 
     if settings.slack_webhook_url:
         try:

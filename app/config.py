@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     chroma_embed_model: str = "nomic-embed-text"
     chroma_collection: str = "k8s-runbooks"
     chroma_port: int = 8000
+    discord_bot_token: str = ""
+    discord_channel_id: str = ""
     enable_auto_apply: bool = False
     agent_timeout_seconds: int = 120
     max_concurrent_investigations: int = 3

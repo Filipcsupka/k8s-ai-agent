@@ -77,7 +77,8 @@ def save_investigation(
     diagnosis: str,
     duration_sec: float,
     tool_calls: list[str],
-) -> None:
+    proposed_action: dict | None = None,
+) -> str | None:
     inv_dir = settings.investigations_dir
     try:
         os.makedirs(inv_dir, exist_ok=True)
@@ -104,7 +105,7 @@ def save_investigation(
                 "Dedup: skip %s/%s/%s (%d/%d already saved)",
                 alert_name, namespace, pod_base, count, limit,
             )
-            return
+            return None
 
         # Reserve slot before releasing lock
         _counts[key] = count + 1
@@ -124,6 +125,7 @@ def save_investigation(
         "duration_sec": round(duration_sec, 1),
         "tool_calls": tool_calls,
         "diagnosis": diagnosis,
+        "proposed_action": proposed_action,
         "reviewed": False,
         "correct": None,
         "notes": "",
@@ -137,8 +139,10 @@ def save_investigation(
             "Investigation saved: %s (%.1fs, %d tools, slot %d/%d)",
             path, duration_sec, len(tool_calls), count + 1, settings.max_investigations_per_scenario,
         )
+        return filename
     except Exception as e:
         # Rollback counter on write failure
         with _counts_lock:
             _counts[key] = max(0, _counts.get(key, 1) - 1)
         logger.warning("Failed to save investigation to %s: %s", path, e)
+        return None

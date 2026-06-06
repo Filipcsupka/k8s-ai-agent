@@ -205,6 +205,20 @@ def _patch_investigation(filename: str, patch: dict) -> dict:
     return rec
 
 
+@app.get("/investigations/{filename}")
+def get_investigation(filename: str):
+    """Get a single investigation by filename."""
+    inv_dir = settings.investigations_dir
+    safe = os.path.basename(filename)
+    if not safe.endswith(".json"):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    path = os.path.join(inv_dir, safe)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail=f"Investigation {safe} not found")
+    with open(path) as f:
+        return json.load(f)
+
+
 @app.post("/investigations/{filename}/approve")
 def approve_investigation(filename: str, notes: str = ""):
     """Mark investigation as reviewed=true, correct=true. Ingest CronJob will pick it up for RAG."""

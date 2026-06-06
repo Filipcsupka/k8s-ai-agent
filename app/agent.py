@@ -143,13 +143,14 @@ async def run_agent(alert: dict) -> None:
         tool_calls_used = ["check_high_similarity_match"]
         duration = time.monotonic() - t_start
         proposed_action = _extract_proposed_action(final)
-        save_investigation(alert, final, duration, tool_calls_used)
+        inv_id = save_investigation(alert, final, duration, tool_calls_used, proposed_action=proposed_action)
         await notify_slack(
             alert_name=alert_name,
             namespace=namespace,
             pod=pod,
             diagnosis=final,
             proposed_action=proposed_action,
+            investigation_id=inv_id,
         )
         return
 
@@ -190,7 +191,7 @@ async def run_agent(alert: dict) -> None:
     if proposed_action:
         logger.info("Proposed action: %s", proposed_action)
 
-    save_investigation(alert, final, duration, tool_calls_used)
+    inv_id = save_investigation(alert, final, duration, tool_calls_used, proposed_action=proposed_action)
 
     await notify_slack(
         alert_name=alert_name,
@@ -198,4 +199,5 @@ async def run_agent(alert: dict) -> None:
         pod=pod,
         diagnosis=final,
         proposed_action=proposed_action,
+        investigation_id=inv_id,
     )
