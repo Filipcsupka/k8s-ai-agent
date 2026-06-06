@@ -110,7 +110,20 @@ def save_investigation(
                     f for f in os.listdir(inv_dir)
                     if f.endswith(".json") and f"-{safe_alert}-{namespace}." in f
                 )
-                return matches[-1] if matches else None
+                if not matches:
+                    return None
+                filename = matches[-1]
+                if proposed_action is not None:
+                    path = os.path.join(inv_dir, filename)
+                    try:
+                        with open(path) as f:
+                            rec = json.load(f)
+                        rec["proposed_action"] = proposed_action
+                        with open(path, "w") as f:
+                            json.dump(rec, f, indent=2)
+                    except Exception:
+                        pass
+                return filename
             except Exception:
                 return None
 
