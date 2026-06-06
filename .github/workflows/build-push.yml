@@ -54,9 +54,9 @@ jobs:
       - name: Update image tag in prod overlay
         run: |
           TAG="sha-${GITHUB_SHA::7}"
-          sed -i "s/newTag: .*/newTag: ${TAG}/" \
+          sed -i '/- name: ghcr.io\/filipcsupka\/k8s-ai-agent$/{n;n;s/newTag:.*/newTag: '"${TAG}"'/}' \
             infra/gitops/apps/k8s-ai-agent/overlays/prod/kustomization.yaml
-          echo "Image tag → ${TAG}"
+          echo "Agent image tag → ${TAG}"
 
       - name: Commit and push to infra
         working-directory: infra

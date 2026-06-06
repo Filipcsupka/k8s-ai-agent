@@ -13,7 +13,7 @@ env:
 
 jobs:
   build:
-    name: Build → push
+    name: Build → push → update infra
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -40,3 +40,30 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:sha-${{ env.SHORT_SHA }}
             ${{ env.IMAGE }}:latest
+
+      - name: Checkout infra repo
+        uses: actions/checkout@v4
+        with:
+          repository: Filipcsupka/infra
+          token: ${{ secrets.INFRA_REPO_TOKEN }}
+          path: infra
+
+      - name: Update bot image tag in prod overlay
+        run: |
+          TAG="sha-${GITHUB_SHA::7}"
+          sed -i '/- name:.*discord-bot/{n;n;s/newTag:.*/newTag: '"${TAG}"'/}' \
+            infra/gitops/apps/k8s-ai-agent/overlays/prod/kustomization.yaml
+          echo "Bot image tag → ${TAG}"
+
+      - name: Commit and push to infra
+        working-directory: infra
+        env:
+          PAT: ${{ secrets.INFRA_REPO_TOKEN }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${PAT}@github.com/Filipcsupka/infra.git"
+          git add gitops/apps/k8s-ai-agent/overlays/prod/kustomization.yaml
+          git diff --cached --quiet && echo "No changes" && exit 0
+          git commit -m "chore(discord-bot): deploy sha-${GITHUB_SHA::7}"
+          git push
