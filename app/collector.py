@@ -105,7 +105,14 @@ def save_investigation(
                 "Dedup: skip %s/%s/%s (%d/%d already saved)",
                 alert_name, namespace, pod_base, count, limit,
             )
-            return None
+            try:
+                matches = sorted(
+                    f for f in os.listdir(inv_dir)
+                    if f.endswith(".json") and f"-{safe_alert}-{namespace}." in f
+                )
+                return matches[-1] if matches else None
+            except Exception:
+                return None
 
         # Reserve slot before releasing lock
         _counts[key] = count + 1
