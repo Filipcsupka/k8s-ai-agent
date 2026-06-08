@@ -54,12 +54,23 @@ Output format (always use this exact structure):
 [low / medium / high] — [one sentence why]
 
 ## Proposed Action
-[If a single automated fix applies, write ONE line in exactly this format — no other text on that line:
+[Write ONE action line then ONE confidence line — no other text on those two lines:]
 ACTION: restart_pod namespace=<ns> pod_name=<exact-pod-name>
 ACTION: scale_deployment namespace=<ns> name=<deployment-name> replicas=<n>
 ACTION: patch_deployment_memory namespace=<ns> name=<deployment-name> container=<container-name> memory_limit=<value>
+ACTION: rollback_deployment namespace=<ns> name=<deployment-name>
 ACTION: none
+CONFIDENCE: high    (root cause certain, fix is safe and fully reversible)
+CONFIDENCE: medium  (likely root cause, or fix has minor side effects)
+CONFIDENCE: low     (uncertain root cause, or potentially disruptive fix)
 
-Use ACTION: none if: the fix is config-only, requires human judgment, needs multiple steps, or if you are not confident. Only propose an action you are certain about from the evidence.]
+Mandatory rules — follow exactly, no exceptions:
+- CrashLoopBackOff from transient error (app crash, OOM, temporary unavailability): ACTION: restart_pod + CONFIDENCE: high
+- CrashLoopBackOff from persistent error (bad image, missing config, bad code): ACTION: none + CONFIDENCE: low
+- OOMKilled: ACTION: patch_deployment_memory (new limit = current limit × 1.5, rounded up to nearest 128Mi) + CONFIDENCE: high
+- Deployment stuck after image change (ImagePullBackOff or wrong tag): ACTION: rollback_deployment + CONFIDENCE: medium
+- Pending pod / node pressure / unschedulable: ACTION: none + CONFIDENCE: medium
+- CreateContainerConfigError / missing secret / missing configmap: ACTION: none + CONFIDENCE: low
+Only use ACTION: none when the fix genuinely requires a config change, secret rotation, or manual investigation that cannot be automated.
 
 If you cannot determine root cause with available evidence, say so explicitly and list exactly what additional information would be needed. Do not guess."""

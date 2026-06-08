@@ -36,6 +36,7 @@ from app.tools.k8s import (
 logger = logging.getLogger(__name__)
 
 _ACTION_RE = re.compile(r"^ACTION:\s*(\S+)\s*(.*?)\s*$", re.MULTILINE)
+_CONFIDENCE_RE = re.compile(r"^CONFIDENCE:\s*(high|medium|low)\s*$", re.MULTILINE | re.IGNORECASE)
 
 
 def _extract_proposed_action(text: str) -> Optional[dict]:
@@ -52,6 +53,61 @@ def _extract_proposed_action(text: str) -> Optional[dict]:
     except Exception:
         return None
     return {"action": action, **params}
+
+
+def _extract_confidence(text: str) -> str:
+    """Parse 'CONFIDENCE: high/medium/low' from agent output. Defaults to 'medium'."""
+    m = _CONFIDENCE_RE.search(text)
+    return m.group(1).lower() if m else "medium"
+
+
+async def _maybe_auto_apply(proposed_action: dict, confidence: str) -> Optional[str]:
+    """
+    Execute the fix without a human button click when:
+      - ENABLE_AUTO_APPLY=true
+      - confidence matches AUTO_APPLY_CONFIDENCE_THRESHOLD (default: high)
+      - action is in AUTO_APPLY_ACTIONS whitelist (default: restart_pod)
+    Returns result string on success, None if not auto-applied.
+    """
+    if not settings.enable_auto_apply:
+        return None
+    if confidence.lower() != settings.auto_apply_confidence_threshold.lower():
+        return None
+    whitelist = {a.strip() for a in settings.auto_apply_actions.split(",") if a.strip()}
+    action_name = proposed_action.get("action", "")
+    if action_name not in whitelist:
+        return None
+
+    from app.tools import apply as apply_tools  # late import avoids circular dep
+    try:
+        if action_name == "restart_pod":
+            ns = proposed_action.get("namespace", "")
+            pod = proposed_action.get("pod_name", "")
+            if not ns or not pod:
+                logger.warning("Auto-apply restart_pod: missing namespace or pod_name in %s", proposed_action)
+                return None
+            result = apply_tools.restart_pod(namespace=ns, pod_name=pod)
+            logger.info("Auto-applied restart_pod %s/%s: %s", ns, pod, result)
+            return result
+        elif action_name == "patch_deployment_memory":
+            ns = proposed_action.get("namespace", "")
+            name = proposed_action.get("name", "")
+            container = proposed_action.get("container", "")
+            memory_limit = proposed_action.get("memory_limit", "")
+            if not all([ns, name, container, memory_limit]):
+                logger.warning("Auto-apply patch_deployment_memory: missing fields in %s", proposed_action)
+                return None
+            result = apply_tools.patch_deployment_memory(
+                namespace=ns, name=name, container=container, memory_limit=memory_limit
+            )
+            logger.info("Auto-applied patch_deployment_memory %s/%s: %s", ns, name, result)
+            return result
+        else:
+            logger.warning("Auto-apply: unhandled whitelisted action %s", action_name)
+            return None
+    except Exception as e:
+        logger.error("Auto-apply failed for %s: %s", action_name, e)
+        return None
 
 
 # lookup_runbook first (direct metadata, no threshold), then past investigations, then live k8s
@@ -143,6 +199,8 @@ async def run_agent(alert: dict) -> None:
         tool_calls_used = ["check_high_similarity_match"]
         duration = time.monotonic() - t_start
         proposed_action = _extract_proposed_action(final)
+        confidence = _extract_confidence(final)
+        auto_applied = await _maybe_auto_apply(proposed_action, confidence) if proposed_action else None
         inv_id = save_investigation(alert, final, duration, tool_calls_used, proposed_action=proposed_action)
         await notify_slack(
             alert_name=alert_name,
@@ -151,6 +209,7 @@ async def run_agent(alert: dict) -> None:
             diagnosis=final,
             proposed_action=proposed_action,
             investigation_id=inv_id,
+            auto_applied=auto_applied,
         )
         return
 
@@ -188,8 +247,11 @@ async def run_agent(alert: dict) -> None:
     duration = time.monotonic() - t_start
 
     proposed_action = _extract_proposed_action(final)
+    confidence = _extract_confidence(final)
     if proposed_action:
-        logger.info("Proposed action: %s", proposed_action)
+        logger.info("Proposed action: %s (confidence: %s)", proposed_action, confidence)
+
+    auto_applied = await _maybe_auto_apply(proposed_action, confidence) if proposed_action else None
 
     inv_id = save_investigation(alert, final, duration, tool_calls_used, proposed_action=proposed_action)
 
@@ -200,4 +262,5 @@ async def run_agent(alert: dict) -> None:
         diagnosis=final,
         proposed_action=proposed_action,
         investigation_id=inv_id,
+        auto_applied=auto_applied,
     )

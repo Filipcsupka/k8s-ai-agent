@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     discord_bot_token: str = ""
     discord_channel_id: str = ""
     enable_auto_apply: bool = False
+    auto_apply_actions: str = "restart_pod"         # comma-separated whitelist for auto-apply (no human click)
+    auto_apply_confidence_threshold: str = "high"   # min confidence level — high/medium/low
     agent_timeout_seconds: int = 120
     max_concurrent_investigations: int = 3
     investigations_dir: str = "/data/investigations"

@@ -70,6 +70,42 @@ def scale_deployment(namespace: str, name: str, replicas: int) -> str:
         return f"ERROR scaling {namespace}/{name}: {e}"
 
 
+def rollback_deployment(namespace: str, name: str) -> str:
+    """
+    Roll back a deployment to its previous revision.
+    Equivalent to `kubectl rollout undo deployment/<name> -n <namespace>`.
+    Finds the second-most-recent ReplicaSet owned by the deployment and restores its pod template.
+    """
+    _check_gate("rollback_deployment")
+    api = _api_client()
+    apps = client.AppsV1Api(api_client=api)
+    try:
+        dep = apps.read_namespaced_deployment(name=name, namespace=namespace)
+        selector = dep.spec.selector.match_labels
+        label_selector = ",".join(f"{k}={v}" for k, v in selector.items())
+
+        rs_list = apps.list_namespaced_replica_set(namespace=namespace, label_selector=label_selector)
+        owned: list[tuple[int, object]] = []
+        for rs in rs_list.items:
+            for ref in (rs.metadata.owner_references or []):
+                if ref.kind == "Deployment" and ref.name == name:
+                    rev = int((rs.metadata.annotations or {}).get("deployment.kubernetes.io/revision", "0"))
+                    owned.append((rev, rs))
+
+        if len(owned) < 2:
+            return f"ERROR: {namespace}/{name} has no previous revision to roll back to"
+
+        owned.sort(key=lambda x: x[0])
+        prev_rev, prev_rs = owned[-2]
+
+        dep.spec.template = prev_rs.spec.template
+        apps.patch_namespaced_deployment(name=name, namespace=namespace, body=dep)
+        logger.info("Rolled back %s/%s to revision %d", namespace, name, prev_rev)
+        return f"Deployment {namespace}/{name} rolled back to revision {prev_rev}."
+    except Exception as e:
+        return f"ERROR rolling back {namespace}/{name}: {e}"
+
+
 def patch_deployment_memory(namespace: str, name: str, container: str, memory_limit: str) -> str:
     """
     Update memory limit for a container in a deployment.

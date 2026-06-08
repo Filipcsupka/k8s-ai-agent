@@ -106,10 +106,10 @@ async def receive_alert(payload: AlertManagerPayload, background_tasks: Backgrou
 
 class ApplyRequest(BaseModel):
     """Payload for the human-approval apply endpoint."""
-    action: str        # restart_pod | scale_deployment | patch_deployment_memory
+    action: str        # restart_pod | scale_deployment | patch_deployment_memory | rollback_deployment
     namespace: str
     pod_name: str = ""      # restart_pod
-    name: str = ""          # scale_deployment, patch_deployment_memory
+    name: str = ""          # scale_deployment, patch_deployment_memory, rollback_deployment
     replicas: int = 1       # scale_deployment
     container: str = ""     # patch_deployment_memory
     memory_limit: str = ""  # patch_deployment_memory
@@ -149,6 +149,10 @@ async def apply_action(req: ApplyRequest):
             namespace=req.namespace, name=req.name,
             container=req.container, memory_limit=req.memory_limit,
         )
+    elif req.action == "rollback_deployment":
+        if not req.name:
+            raise HTTPException(status_code=400, detail="name required for rollback_deployment")
+        result = apply_tools.rollback_deployment(namespace=req.namespace, name=req.name)
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action: {req.action}")
 

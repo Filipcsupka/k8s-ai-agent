@@ -38,6 +38,10 @@ _ACTION_DESCRIPTIONS: dict[str, str] = {
         "Updates the memory limit for a container in the deployment. "
         "Triggers a rolling restart — old pods replaced one by one."
     ),
+    "rollback_deployment": (
+        "Rolls the deployment back to its previous revision. "
+        "Equivalent to `kubectl rollout undo`. Triggers a rolling update back to the last known-good image."
+    ),
 }
 
 
@@ -53,6 +57,8 @@ def _action_target(action: dict) -> str:
             f"deployment `{action.get('name', '?')}` container `{action.get('container', '?')}` "
             f"in `{ns}` → memory={action.get('memory_limit', '?')}"
         )
+    if a == "rollback_deployment":
+        return f"deployment `{action.get('name', '?')}` in namespace `{ns}` → previous revision"
     return f"namespace `{ns}`"
 
 
@@ -74,6 +80,7 @@ def _build_embeds(
     pod: str,
     diagnosis: str,
     proposed_action: Optional[dict],
+    auto_applied: Optional[str] = None,
 ) -> list[dict]:
     truncated = diagnosis[:DISCORD_CHAR_LIMIT] + ("…" if len(diagnosis) > DISCORD_CHAR_LIMIT else "")
 
@@ -87,55 +94,93 @@ def _build_embeds(
 
     if proposed_action:
         action_name = proposed_action.get("action", "unknown")
-        description = _ACTION_DESCRIPTIONS.get(action_name, "Executes a cluster change.")
         target = _action_target(proposed_action)
-        snippet = _apply_snippet(proposed_action)
-        embeds.append(
-            {
-                "title": f"🔧 Proposed fix: {action_name}",
-                "description": (
-                    f"**Target:** {target}\n"
-                    f"**What it does:** {description}\n\n"
-                    f"⚠️ **Agent does NOT apply this automatically.** "
-                    f"Review diagnosis above, then run to approve:\n{snippet}"
-                ),
-                "color": _COLOR_ACTION,
-                "footer": {"text": "Calls /apply on agent pod — only works if ENABLE_AUTO_APPLY=true"},
-            }
-        )
+        if auto_applied:
+            embeds.append(
+                {
+                    "title": f"⚡ Auto-applied: {action_name}",
+                    "description": (
+                        f"**Target:** {target}\n"
+                        f"**Result:** {auto_applied}\n\n"
+                        f"Was this the right call?\n"
+                        f"**Correct fix** → confirms diagnosis, trains RAG for faster future response.\n"
+                        f"**Wrong fix** → flags as incorrect, prevents repeating the mistake."
+                    ),
+                    "color": _COLOR_INFO,
+                    "footer": {"text": "Auto-applied (CONFIDENCE: high) — no manual approval needed"},
+                }
+            )
+        else:
+            description = _ACTION_DESCRIPTIONS.get(action_name, "Executes a cluster change.")
+            snippet = _apply_snippet(proposed_action)
+            embeds.append(
+                {
+                    "title": f"🔧 Proposed fix: {action_name}",
+                    "description": (
+                        f"**Target:** {target}\n"
+                        f"**What it does:** {description}\n\n"
+                        f"⚠️ **Agent does NOT apply this automatically.** "
+                        f"Review diagnosis above, then run to approve:\n{snippet}"
+                    ),
+                    "color": _COLOR_ACTION,
+                    "footer": {"text": "Calls /apply on agent pod — only works if ENABLE_AUTO_APPLY=true"},
+                }
+            )
 
     return embeds
 
 
-def _build_components(proposed_action: Optional[dict], investigation_id: Optional[str]) -> list[dict]:
+def _build_components(
+    proposed_action: Optional[dict],
+    investigation_id: Optional[str],
+    auto_applied: Optional[str] = None,
+) -> list[dict]:
     if not investigation_id:
         return []
 
-    buttons = [
-        {
-            "type": 2,
-            "style": _STYLE_SUCCESS,
-            "label": "Approve",
-            "emoji": {"name": "✅"},
-            "custom_id": f"approve:{investigation_id}",
-        },
-        {
-            "type": 2,
-            "style": _STYLE_DANGER,
-            "label": "Reject",
-            "emoji": {"name": "❌"},
-            "custom_id": f"reject:{investigation_id}",
-        },
-    ]
-
-    if proposed_action and proposed_action.get("action") not in (None, "none", "unknown"):
-        buttons.append({
-            "type": 2,
-            "style": _STYLE_PRIMARY,
-            "label": "Apply Fix",
-            "emoji": {"name": "⚡"},
-            "custom_id": f"apply:{investigation_id}",
-        })
+    if auto_applied:
+        # Fix already executed — buttons are RAG feedback only, no Apply Fix
+        buttons = [
+            {
+                "type": 2,
+                "style": _STYLE_SUCCESS,
+                "label": "Correct fix",
+                "emoji": {"name": "✅"},
+                "custom_id": f"approve:{investigation_id}",
+            },
+            {
+                "type": 2,
+                "style": _STYLE_DANGER,
+                "label": "Wrong fix",
+                "emoji": {"name": "❌"},
+                "custom_id": f"reject:{investigation_id}",
+            },
+        ]
+    else:
+        buttons = [
+            {
+                "type": 2,
+                "style": _STYLE_SUCCESS,
+                "label": "Approve",
+                "emoji": {"name": "✅"},
+                "custom_id": f"approve:{investigation_id}",
+            },
+            {
+                "type": 2,
+                "style": _STYLE_DANGER,
+                "label": "Reject",
+                "emoji": {"name": "❌"},
+                "custom_id": f"reject:{investigation_id}",
+            },
+        ]
+        if proposed_action and proposed_action.get("action") not in (None, "none", "unknown"):
+            buttons.append({
+                "type": 2,
+                "style": _STYLE_PRIMARY,
+                "label": "Apply Fix",
+                "emoji": {"name": "⚡"},
+                "custom_id": f"apply:{investigation_id}",
+            })
 
     return [{"type": 1, "components": buttons}]
 
@@ -147,12 +192,13 @@ async def _send_discord_bot(
     diagnosis: str,
     proposed_action: Optional[dict],
     investigation_id: Optional[str],
-) -> None:
+    auto_applied: Optional[str] = None,
+) -> Optional[str]:
     pod_str = f" • pod `{pod}`" if pod else ""
     content = f":rotating_light: **K8s Alert: {alert_name}** • namespace `{namespace}`{pod_str}"
 
-    embeds = _build_embeds(alert_name, namespace, pod, diagnosis, proposed_action)
-    components = _build_components(proposed_action, investigation_id)
+    embeds = _build_embeds(alert_name, namespace, pod, diagnosis, proposed_action, auto_applied)
+    components = _build_components(proposed_action, investigation_id, auto_applied)
 
     payload = {"content": content, "embeds": embeds, "components": components}
     headers = {
@@ -240,11 +286,15 @@ async def notify_slack(
     diagnosis: str,
     proposed_action: Optional[dict] = None,
     investigation_id: Optional[str] = None,
-) -> None:
+    auto_applied: Optional[str] = None,
+) -> Optional[str]:
     if settings.discord_bot_token and settings.discord_channel_id:
         try:
-            await _send_discord_bot(alert_name, namespace, pod, diagnosis, proposed_action, investigation_id)
-            return
+            msg_id = await _send_discord_bot(
+                alert_name, namespace, pod, diagnosis,
+                proposed_action, investigation_id, auto_applied,
+            )
+            return msg_id
         except Exception as e:
             logger.error("Discord bot notification failed: %s — falling back to webhook", e)
 
