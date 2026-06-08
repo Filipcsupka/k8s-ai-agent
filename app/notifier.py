@@ -6,11 +6,15 @@ Priority: Discord bot API (with buttons) → Discord webhook (no buttons) → Sl
 
 import json
 import logging
+import re
 from typing import Optional
 import httpx
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Regex to extract named sections from agent output
+_SECTION_RE = re.compile(r"^##\s+(\w[\w ]*\w)\s*\n(.*?)(?=\n##\s|\Z)", re.MULTILINE | re.DOTALL)
 
 DISCORD_CHAR_LIMIT = 4000
 SLACK_CHAR_LIMIT = 2500
@@ -43,6 +47,11 @@ _ACTION_DESCRIPTIONS: dict[str, str] = {
         "Equivalent to `kubectl rollout undo`. Triggers a rolling update back to the last known-good image."
     ),
 }
+
+
+def _parse_sections(text: str) -> dict[str, str]:
+    """Extract ## Section content from agent diagnosis text."""
+    return {m.group(1).strip(): m.group(2).strip() for m in _SECTION_RE.finditer(text)}
 
 
 def _action_target(action: dict) -> str:
@@ -82,50 +91,83 @@ def _build_embeds(
     proposed_action: Optional[dict],
     auto_applied: Optional[str] = None,
 ) -> list[dict]:
-    truncated = diagnosis[:DISCORD_CHAR_LIMIT] + ("…" if len(diagnosis) > DISCORD_CHAR_LIMIT else "")
+    sections = _parse_sections(diagnosis)
+    summary = sections.get("Summary", "")
+    next_steps = sections.get("Next Steps", "")
 
+    # Build full technical detail block (everything except Summary and Proposed Action)
+    skip = {"Summary", "Proposed Action"}
+    tech_parts = []
+    for m in _SECTION_RE.finditer(diagnosis):
+        title = m.group(1).strip()
+        if title not in skip:
+            tech_parts.append(f"**{title}**\n{m.group(2).strip()}")
+    tech_detail = "\n\n".join(tech_parts)
+
+    # Primary embed: plain-English summary (or full text if no summary section)
+    primary_text = summary if summary else diagnosis[:DISCORD_CHAR_LIMIT]
+    primary_text = primary_text[:DISCORD_CHAR_LIMIT] + ("…" if len(primary_text) > DISCORD_CHAR_LIMIT else "")
     embeds = [
         {
-            "description": truncated,
+            "description": primary_text,
             "color": _COLOR_ALERT,
             "footer": {"text": "k8s-ai-agent"},
         }
     ]
 
+    # Secondary embed: technical details (collapsed visually by being lower in the message)
+    if tech_detail and summary:
+        tech_truncated = tech_detail[:DISCORD_CHAR_LIMIT] + ("…" if len(tech_detail) > DISCORD_CHAR_LIMIT else "")
+        embeds.append(
+            {
+                "title": "🔍 Technical Details",
+                "description": tech_truncated,
+                "color": 0x2C2F33,  # dark grey — less prominent
+            }
+        )
+
+    # Action embed
     if proposed_action:
         action_name = proposed_action.get("action", "unknown")
         target = _action_target(proposed_action)
         if auto_applied:
             embeds.append(
                 {
-                    "title": f"⚡ Auto-applied: {action_name}",
+                    "title": f"⚡ Already fixed: {action_name}",
                     "description": (
-                        f"**Target:** {target}\n"
+                        f"**What we did:** {target}\n"
                         f"**Result:** {auto_applied}\n\n"
-                        f"Was this the right call?\n"
-                        f"**Correct fix** → confirms diagnosis, trains RAG for faster future response.\n"
-                        f"**Wrong fix** → flags as incorrect, prevents repeating the mistake."
+                        f"Did this resolve the issue? Your feedback trains the agent to act faster next time."
                     ),
                     "color": _COLOR_INFO,
-                    "footer": {"text": "Auto-applied (CONFIDENCE: high) — no manual approval needed"},
+                    "footer": {"text": "Auto-applied — high confidence fix"},
                 }
             )
         else:
             description = _ACTION_DESCRIPTIONS.get(action_name, "Executes a cluster change.")
-            snippet = _apply_snippet(proposed_action)
             embeds.append(
                 {
-                    "title": f"🔧 Proposed fix: {action_name}",
+                    "title": f"🔧 Ready to fix: {action_name}",
                     "description": (
-                        f"**Target:** {target}\n"
-                        f"**What it does:** {description}\n\n"
-                        f"⚠️ **Agent does NOT apply this automatically.** "
-                        f"Review diagnosis above, then run to approve:\n{snippet}"
+                        f"**What:** {target}\n"
+                        f"**Effect:** {description}\n\n"
+                        f"Click **Fix it now** to apply. The agent will execute this automatically."
                     ),
                     "color": _COLOR_ACTION,
-                    "footer": {"text": "Calls /apply on agent pod — only works if ENABLE_AUTO_APPLY=true"},
+                    "footer": {"text": "Requires your approval — click Fix it now below"},
                 }
             )
+    elif next_steps:
+        # No automated action — show plain-English next steps
+        next_truncated = next_steps[:1000] + ("…" if len(next_steps) > 1000 else "")
+        embeds.append(
+            {
+                "title": "👉 What to do next",
+                "description": next_truncated,
+                "color": 0xFFA500,  # orange — attention needed
+                "footer": {"text": "Manual action required — agent cannot fix this automatically"},
+            }
+        )
 
     return embeds
 
@@ -139,19 +181,19 @@ def _build_components(
         return []
 
     if auto_applied:
-        # Fix already executed — buttons are RAG feedback only, no Apply Fix
+        # Fix already executed — feedback buttons only (no Apply Fix)
         buttons = [
             {
                 "type": 2,
                 "style": _STYLE_SUCCESS,
-                "label": "Correct fix",
+                "label": "Issue resolved",
                 "emoji": {"name": "✅"},
                 "custom_id": f"approve:{investigation_id}",
             },
             {
                 "type": 2,
                 "style": _STYLE_DANGER,
-                "label": "Wrong fix",
+                "label": "Still broken",
                 "emoji": {"name": "❌"},
                 "custom_id": f"reject:{investigation_id}",
             },
@@ -161,14 +203,14 @@ def _build_components(
             {
                 "type": 2,
                 "style": _STYLE_SUCCESS,
-                "label": "Approve",
+                "label": "Looks right",
                 "emoji": {"name": "✅"},
                 "custom_id": f"approve:{investigation_id}",
             },
             {
                 "type": 2,
                 "style": _STYLE_DANGER,
-                "label": "Reject",
+                "label": "Wrong diagnosis",
                 "emoji": {"name": "❌"},
                 "custom_id": f"reject:{investigation_id}",
             },
@@ -177,7 +219,7 @@ def _build_components(
             buttons.append({
                 "type": 2,
                 "style": _STYLE_PRIMARY,
-                "label": "Apply Fix",
+                "label": "Fix it now",
                 "emoji": {"name": "⚡"},
                 "custom_id": f"apply:{investigation_id}",
             })
