@@ -27,6 +27,46 @@ class Bot(commands.Bot):
 bot = Bot()
 
 
+async def _update_message_reviewed(
+    client: httpx.AsyncClient,
+    interaction: discord.Interaction,
+    inv_id: str,
+    action_label: str,
+) -> None:
+    """Remove buttons from the clicked alert message and stamp who handled it."""
+    if not interaction.message:
+        log.warning("No message on interaction — cannot update original message")
+        return
+    try:
+        r = await client.get(f"{AGENT_URL}/investigations/{inv_id}")
+        inv = r.json() if r.status_code == 200 else {}
+
+        alert_name = inv.get("alert_name", "K8s Alert")
+        namespace = inv.get("namespace", "?")
+        pod = inv.get("pod", "")
+        pod_str = f" • pod `{pod}`" if pod else ""
+        content = (
+            f":rotating_light: **K8s Alert: {alert_name}**"
+            f" • namespace `{namespace}`{pod_str}"
+            f"\n🔒 *{action_label} by {interaction.user}*"
+        )
+        headers = {
+            "Authorization": f"Bot {TOKEN}",
+            "Content-Type": "application/json",
+        }
+        resp = await client.patch(
+            f"https://discord.com/api/v10/channels/{interaction.channel_id}/messages/{interaction.message.id}",
+            json={"components": [], "content": content},
+            headers=headers,
+        )
+        if resp.status_code not in (200, 204):
+            log.warning("Discord message update failed (%s): %s", resp.status_code, resp.text[:200])
+        else:
+            log.info("Message %s updated: %s", interaction.message.id, action_label)
+    except Exception:
+        log.warning("Failed to update original Discord message for %s", inv_id, exc_info=True)
+
+
 @bot.event
 async def on_interaction(interaction: discord.Interaction):
     if interaction.type != discord.InteractionType.component:
@@ -35,48 +75,71 @@ async def on_interaction(interaction: discord.Interaction):
         return
 
     custom_id: str = interaction.data.get("custom_id", "")
+    log.info("button: %s by %s", custom_id, interaction.user)
     await interaction.response.defer(ephemeral=True)
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        if custom_id.startswith("approve:"):
-            inv_id = custom_id[len("approve:"):]
-            r = await client.post(f"{AGENT_URL}/investigations/{inv_id}/approve")
-            if r.status_code == 200:
-                await interaction.followup.send(f"✅ Approved `{inv_id}` — will be ingested into RAG.", ephemeral=True)
-            else:
-                await interaction.followup.send(f"Failed ({r.status_code}): {r.text}", ephemeral=True)
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            if custom_id.startswith("approve:"):
+                inv_id = custom_id[len("approve:"):]
+                r = await client.post(f"{AGENT_URL}/investigations/{inv_id}/approve")
+                if r.status_code == 200:
+                    await interaction.followup.send(
+                        f"✅ Approved `{inv_id}` — will be ingested into RAG.", ephemeral=True
+                    )
+                    await _update_message_reviewed(client, interaction, inv_id, "✅ Approved")
+                else:
+                    await interaction.followup.send(f"Failed ({r.status_code}): {r.text}", ephemeral=True)
 
-        elif custom_id.startswith("reject:"):
-            inv_id = custom_id[len("reject:"):]
-            r = await client.post(f"{AGENT_URL}/investigations/{inv_id}/reject")
-            if r.status_code == 200:
-                await interaction.followup.send(f"❌ Rejected `{inv_id}`.", ephemeral=True)
-            else:
-                await interaction.followup.send(f"Failed ({r.status_code}): {r.text}", ephemeral=True)
+            elif custom_id.startswith("reject:"):
+                inv_id = custom_id[len("reject:"):]
+                r = await client.post(f"{AGENT_URL}/investigations/{inv_id}/reject")
+                if r.status_code == 200:
+                    await interaction.followup.send(f"❌ Rejected `{inv_id}`.", ephemeral=True)
+                    await _update_message_reviewed(client, interaction, inv_id, "❌ Rejected")
+                else:
+                    await interaction.followup.send(f"Failed ({r.status_code}): {r.text}", ephemeral=True)
 
-        elif custom_id.startswith("apply:"):
-            inv_id = custom_id[len("apply:"):]
-            r = await client.get(f"{AGENT_URL}/investigations/{inv_id}")
-            if r.status_code != 200:
-                await interaction.followup.send(f"Could not load investigation ({r.status_code}).", ephemeral=True)
-                return
-            inv = r.json()
-            action = inv.get("proposed_action")
-            if not action:
-                await interaction.followup.send("No proposed_action stored in investigation.", ephemeral=True)
-                return
-            r2 = await client.post(f"{AGENT_URL}/apply", json=action)
-            if r2.status_code == 200:
-                result = r2.json()
-                await interaction.followup.send(
-                    f"⚡ Applied `{action.get('action')}`: {result.get('message', 'done')}",
-                    ephemeral=True,
-                )
-            else:
-                await interaction.followup.send(f"Apply failed ({r2.status_code}): {r2.text}", ephemeral=True)
+            elif custom_id.startswith("apply:"):
+                inv_id = custom_id[len("apply:"):]
+                r = await client.get(f"{AGENT_URL}/investigations/{inv_id}")
+                if r.status_code != 200:
+                    await interaction.followup.send(
+                        f"Could not load investigation ({r.status_code}).", ephemeral=True
+                    )
+                    return
+                inv = r.json()
+                action = inv.get("proposed_action")
+                if not action:
+                    await interaction.followup.send(
+                        "No proposed_action stored in investigation.", ephemeral=True
+                    )
+                    return
+                r2 = await client.post(f"{AGENT_URL}/apply", json=action)
+                if r2.status_code == 200:
+                    result = r2.json()
+                    action_name = action.get("action", "?")
+                    await interaction.followup.send(
+                        f"⚡ Applied `{action_name}`: {result.get('message', 'done')}",
+                        ephemeral=True,
+                    )
+                    await _update_message_reviewed(
+                        client, interaction, inv_id, f"⚡ Applied `{action_name}`"
+                    )
+                else:
+                    await interaction.followup.send(
+                        f"Apply failed ({r2.status_code}): {r2.text}", ephemeral=True
+                    )
 
-        else:
-            log.warning("Unknown button custom_id: %s", custom_id)
+            else:
+                log.warning("Unknown button custom_id: %s", custom_id)
+
+    except Exception:
+        log.exception("Error handling interaction %s", custom_id)
+        try:
+            await interaction.followup.send("Internal error — check bot logs.", ephemeral=True)
+        except Exception:
+            pass
 
 
 @bot.tree.command(name="investigate", description="Trigger AI investigation of a namespace")

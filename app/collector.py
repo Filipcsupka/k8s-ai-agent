@@ -91,6 +91,7 @@ def save_investigation(
     namespace = labels.get("namespace", "unknown")
     pod = labels.get("pod", "")
     pod_base = _pod_base(pod)
+    safe_alert = alert_name.replace("/", "-")
     key = (alert_name, namespace, pod_base)
 
     with _counts_lock:
@@ -132,7 +133,6 @@ def save_investigation(
 
     ts = datetime.now(timezone.utc)
     ts_str = ts.strftime("%Y%m%dT%H%M%SZ")
-    safe_alert = alert_name.replace("/", "-")
     filename = f"{ts_str}-{safe_alert}-{namespace}.json"
 
     record = {
