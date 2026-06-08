@@ -90,6 +90,7 @@ def _build_embeds(
     diagnosis: str,
     proposed_action: Optional[dict],
     auto_applied: Optional[str] = None,
+    is_rag_hit: bool = False,
 ) -> list[dict]:
     sections = _parse_sections(diagnosis)
     summary = sections.get("Summary", "")
@@ -115,8 +116,9 @@ def _build_embeds(
         }
     ]
 
-    # Secondary embed: technical details (collapsed visually by being lower in the message)
-    if tech_detail and summary:
+    # Secondary embed: technical details — only for new investigations, not RAG cache hits
+    # RAG hits are known patterns; the team has already seen the full diagnosis
+    if tech_detail and summary and not is_rag_hit:
         tech_truncated = tech_detail[:DISCORD_CHAR_LIMIT] + ("…" if len(tech_detail) > DISCORD_CHAR_LIMIT else "")
         embeds.append(
             {
@@ -127,13 +129,14 @@ def _build_embeds(
         )
 
     # Action embed
+    rag_badge = " *(recurring — known pattern)*" if is_rag_hit else ""
     if proposed_action:
         action_name = proposed_action.get("action", "unknown")
         target = _action_target(proposed_action)
         if auto_applied:
             embeds.append(
                 {
-                    "title": f"⚡ Already fixed: {action_name}",
+                    "title": f"⚡ Already fixed: {action_name}{rag_badge}",
                     "description": (
                         f"**What we did:** {target}\n"
                         f"**Result:** {auto_applied}\n\n"
@@ -147,7 +150,7 @@ def _build_embeds(
             description = _ACTION_DESCRIPTIONS.get(action_name, "Executes a cluster change.")
             embeds.append(
                 {
-                    "title": f"🔧 Ready to fix: {action_name}",
+                    "title": f"🔧 Ready to fix: {action_name}{rag_badge}",
                     "description": (
                         f"**What:** {target}\n"
                         f"**Effect:** {description}\n\n"
@@ -162,7 +165,7 @@ def _build_embeds(
         next_truncated = next_steps[:1000] + ("…" if len(next_steps) > 1000 else "")
         embeds.append(
             {
-                "title": "👉 What to do next",
+                "title": f"👉 What to do next{rag_badge}",
                 "description": next_truncated,
                 "color": 0xFFA500,  # orange — attention needed
                 "footer": {"text": "Manual action required — agent cannot fix this automatically"},
@@ -235,11 +238,13 @@ async def _send_discord_bot(
     proposed_action: Optional[dict],
     investigation_id: Optional[str],
     auto_applied: Optional[str] = None,
+    is_rag_hit: bool = False,
 ) -> Optional[str]:
     pod_str = f" • pod `{pod}`" if pod else ""
-    content = f":rotating_light: **K8s Alert: {alert_name}** • namespace `{namespace}`{pod_str}"
+    recur = " 🔁" if is_rag_hit else ""
+    content = f":rotating_light: **K8s Alert: {alert_name}**{recur} • namespace `{namespace}`{pod_str}"
 
-    embeds = _build_embeds(alert_name, namespace, pod, diagnosis, proposed_action, auto_applied)
+    embeds = _build_embeds(alert_name, namespace, pod, diagnosis, proposed_action, auto_applied, is_rag_hit)
     components = _build_components(proposed_action, investigation_id, auto_applied)
 
     payload = {"content": content, "embeds": embeds, "components": components}
@@ -329,12 +334,13 @@ async def notify_slack(
     proposed_action: Optional[dict] = None,
     investigation_id: Optional[str] = None,
     auto_applied: Optional[str] = None,
+    is_rag_hit: bool = False,
 ) -> Optional[str]:
     if settings.discord_bot_token and settings.discord_channel_id:
         try:
             msg_id = await _send_discord_bot(
                 alert_name, namespace, pod, diagnosis,
-                proposed_action, investigation_id, auto_applied,
+                proposed_action, investigation_id, auto_applied, is_rag_hit,
             )
             return msg_id
         except Exception as e:

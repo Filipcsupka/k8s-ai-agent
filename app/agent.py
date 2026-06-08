@@ -210,6 +210,7 @@ async def run_agent(alert: dict) -> None:
             proposed_action=proposed_action,
             investigation_id=inv_id,
             auto_applied=auto_applied,
+            is_rag_hit=True,
         )
         return
 
