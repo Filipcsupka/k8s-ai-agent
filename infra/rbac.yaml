@@ -33,6 +33,11 @@ rules:
       - deployments
       - statefulsets
     verbs: [patch, update]
+  - apiGroups: [apps]
+    resources:
+      - deployments/scale
+      - statefulsets/scale
+    verbs: [patch, update]
   - apiGroups: [metrics.k8s.io]
     resources:
       - pods

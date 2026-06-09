@@ -4,7 +4,7 @@ metadata:
   name: k8s-ai-agent-ingest
   namespace: ai-agent
 spec:
-  schedule: "*/30 * * * *"   # every 30 minutes
+  schedule: "*/10 * * * *"   # every 10 minutes
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3

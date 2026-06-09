@@ -83,7 +83,7 @@ CONFIDENCE: low     (uncertain root cause, or potentially disruptive fix)
 Mandatory action rules — follow exactly, no exceptions:
 - CrashLoopBackOff from transient error (app crash, OOM, temporary unavailability): ACTION: restart_pod + CONFIDENCE: high
 - CrashLoopBackOff from persistent error (bad image, missing config, bad code): ACTION: none + CONFIDENCE: low
-- OOMKilled: ACTION: patch_deployment_memory (new limit = current limit x 1.5, round up to nearest 128Mi) + CONFIDENCE: high
+- OOMKilled: ACTION: patch_deployment_memory (new limit = current limit x 1.5, round up to nearest 128Mi, hard cap 8Gi max). memory_limit value MUST be >= existing requests value — if you cannot confirm the current requests value, set memory_limit equal to the new limit. + CONFIDENCE: high
 - Deployment stuck after image change (ImagePullBackOff or wrong tag): ACTION: rollback_deployment + CONFIDENCE: medium
 - Pending pod / node pressure / unschedulable: ACTION: none + CONFIDENCE: medium
 - CreateContainerConfigError / missing secret / missing configmap: ACTION: none + CONFIDENCE: low

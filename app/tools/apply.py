@@ -17,6 +17,17 @@ _SA_CERT  = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 
 BLACKLISTED_RESOURCES = ["persistentvolumeclaims", "persistentvolumes", "secrets", "nodes"]
 
+_MEMORY_UNITS = {"Ki": 1024, "Mi": 1024**2, "Gi": 1024**3, "Ti": 1024**4,
+                  "K": 1000, "M": 1000**2, "G": 1000**3}
+_MAX_MEMORY_BYTES = 16 * 1024**3  # 16Gi hard cap
+
+
+def _parse_memory_bytes(s: str) -> int:
+    for suffix, mult in _MEMORY_UNITS.items():
+        if s.endswith(suffix):
+            return int(s[:-len(suffix)]) * mult
+    return int(s)
+
 
 def _api_client() -> client.ApiClient:
     """Build ApiClient fresh per call — same pattern as k8s.py to avoid 401 on token rotation."""
@@ -113,6 +124,12 @@ def patch_deployment_memory(namespace: str, name: str, container: str, memory_li
     Use for OOMKilled fixes when the pod needs more memory.
     """
     _check_gate("patch_deployment_memory")
+    try:
+        new_bytes = _parse_memory_bytes(memory_limit)
+    except Exception:
+        return f"ERROR: invalid memory_limit format '{memory_limit}' — use e.g. 512Mi, 1Gi"
+    if new_bytes > _MAX_MEMORY_BYTES:
+        return f"ERROR: memory_limit {memory_limit} exceeds 16Gi safety cap — refusing to apply"
     apps = client.AppsV1Api(api_client=_api_client())
     try:
         dep = apps.read_namespaced_deployment(name=name, namespace=namespace)
@@ -125,6 +142,16 @@ def patch_deployment_memory(namespace: str, name: str, container: str, memory_li
         if target.resources.limits is None:
             target.resources.limits = {}
         target.resources.limits["memory"] = memory_limit
+        # Clamp requests to new limit if existing request > new limit (avoids 422)
+        if target.resources.requests and "memory" in target.resources.requests:
+            try:
+                req_bytes = _parse_memory_bytes(target.resources.requests["memory"])
+                if req_bytes > new_bytes:
+                    logger.info("Clamping memory request from %s → %s to match new limit",
+                                target.resources.requests["memory"], memory_limit)
+                    target.resources.requests["memory"] = memory_limit
+            except Exception:
+                pass
         apps.patch_namespaced_deployment(name=name, namespace=namespace, body=dep)
         logger.info("Patched %s/%s container=%s memory limit → %s", namespace, name, container, memory_limit)
         return f"Deployment {namespace}/{name} container={container} memory limit set to {memory_limit}."
