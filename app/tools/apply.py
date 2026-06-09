@@ -16,6 +16,8 @@ _SA_TOKEN = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 _SA_CERT  = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 
 BLACKLISTED_RESOURCES = ["persistentvolumeclaims", "persistentvolumes", "secrets", "nodes"]
+PROTECTED_NAMESPACES = {"kube-system", "kube-public", "kube-node-lease", "argocd",
+                         "cert-manager", "monitoring", "sealed-secrets"}
 
 _MEMORY_UNITS = {"Ki": 1024, "Mi": 1024**2, "Gi": 1024**3, "Ti": 1024**4,
                   "K": 1000, "M": 1000**2, "G": 1000**3}
@@ -47,17 +49,22 @@ def _api_client() -> client.ApiClient:
         return client.ApiClient()
 
 
-def _check_gate(action: str) -> None:
+def _check_gate(action: str, namespace: str = "") -> None:
     if not settings.enable_auto_apply:
         raise PermissionError(
             f"Action '{action}' blocked: ENABLE_AUTO_APPLY=false. "
             "Set ENABLE_AUTO_APPLY=true to enable the /apply endpoint."
         )
+    if namespace in PROTECTED_NAMESPACES:
+        raise PermissionError(
+            f"Action '{action}' blocked: namespace '{namespace}' is protected. "
+            "System namespaces (argocd, kube-system, etc.) are read-only."
+        )
 
 
 def restart_pod(namespace: str, pod_name: str) -> str:
     """Delete a pod to force restart. Safe for pods managed by a Deployment/ReplicaSet."""
-    _check_gate("restart_pod")
+    _check_gate("restart_pod", namespace)
     core = client.CoreV1Api(api_client=_api_client())
     try:
         core.delete_namespaced_pod(name=pod_name, namespace=namespace)
@@ -69,7 +76,7 @@ def restart_pod(namespace: str, pod_name: str) -> str:
 
 def scale_deployment(namespace: str, name: str, replicas: int) -> str:
     """Scale a deployment to the given replica count."""
-    _check_gate("scale_deployment")
+    _check_gate("scale_deployment", namespace)
     apps = client.AppsV1Api(api_client=_api_client())
     try:
         apps.patch_namespaced_deployment_scale(
@@ -87,7 +94,7 @@ def rollback_deployment(namespace: str, name: str) -> str:
     Equivalent to `kubectl rollout undo deployment/<name> -n <namespace>`.
     Finds the second-most-recent ReplicaSet owned by the deployment and restores its pod template.
     """
-    _check_gate("rollback_deployment")
+    _check_gate("rollback_deployment", namespace)
     api = _api_client()
     apps = client.AppsV1Api(api_client=api)
     try:
@@ -123,7 +130,7 @@ def patch_deployment_memory(namespace: str, name: str, container: str, memory_li
     memory_limit format: '512Mi', '1Gi', etc.
     Use for OOMKilled fixes when the pod needs more memory.
     """
-    _check_gate("patch_deployment_memory")
+    _check_gate("patch_deployment_memory", namespace)
     try:
         new_bytes = _parse_memory_bytes(memory_limit)
     except Exception:
@@ -132,7 +139,17 @@ def patch_deployment_memory(namespace: str, name: str, container: str, memory_li
         return f"ERROR: memory_limit {memory_limit} exceeds 16Gi safety cap — refusing to apply"
     apps = client.AppsV1Api(api_client=_api_client())
     try:
-        dep = apps.read_namespaced_deployment(name=name, namespace=namespace)
+        try:
+            workload = apps.read_namespaced_deployment(name=name, namespace=namespace)
+            patch_fn = lambda body: apps.patch_namespaced_deployment(name=name, namespace=namespace, body=body)
+            kind = "Deployment"
+        except client.exceptions.ApiException as e:
+            if e.status != 404:
+                raise
+            workload = apps.read_namespaced_stateful_set(name=name, namespace=namespace)
+            patch_fn = lambda body: apps.patch_namespaced_stateful_set(name=name, namespace=namespace, body=body)
+            kind = "StatefulSet"
+        dep = workload
         containers = dep.spec.template.spec.containers
         target = next((c for c in containers if c.name == container), None)
         if target is None:
@@ -152,8 +169,8 @@ def patch_deployment_memory(namespace: str, name: str, container: str, memory_li
                     target.resources.requests["memory"] = memory_limit
             except Exception:
                 pass
-        apps.patch_namespaced_deployment(name=name, namespace=namespace, body=dep)
-        logger.info("Patched %s/%s container=%s memory limit → %s", namespace, name, container, memory_limit)
-        return f"Deployment {namespace}/{name} container={container} memory limit set to {memory_limit}."
+        patch_fn(dep)
+        logger.info("Patched %s %s/%s container=%s memory limit → %s", kind, namespace, name, container, memory_limit)
+        return f"{kind} {namespace}/{name} container={container} memory limit set to {memory_limit}."
     except Exception as e:
         return f"ERROR patching deployment {namespace}/{name}: {e}"

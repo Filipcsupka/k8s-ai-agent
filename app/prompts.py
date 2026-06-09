@@ -80,6 +80,10 @@ CONFIDENCE: high    (root cause certain, fix is safe and fully reversible)
 CONFIDENCE: medium  (likely root cause, or fix has minor side effects)
 CONFIDENCE: low     (uncertain root cause, or potentially disruptive fix)
 
+Protected namespaces — NEVER propose any ACTION other than none for these namespaces:
+kube-system, kube-public, kube-node-lease, argocd, cert-manager, monitoring, sealed-secrets.
+For alerts from these namespaces: diagnose only, ACTION: none, explain to platform team.
+
 Mandatory action rules — follow exactly, no exceptions:
 - CrashLoopBackOff from transient error (app crash, OOM, temporary unavailability): ACTION: restart_pod + CONFIDENCE: high
 - CrashLoopBackOff from persistent error (bad image, missing config, bad code): ACTION: none + CONFIDENCE: low
