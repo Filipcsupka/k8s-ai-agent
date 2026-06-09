@@ -84,7 +84,7 @@ Mandatory action rules — follow exactly, no exceptions:
 - CrashLoopBackOff from transient error (app crash, OOM, temporary unavailability): ACTION: restart_pod + CONFIDENCE: high
 - CrashLoopBackOff from persistent error (bad image, missing config, bad code): ACTION: none + CONFIDENCE: low
 - OOMKilled: ACTION: patch_deployment_memory (new limit = current limit x 1.5, round up to nearest 128Mi, hard cap 8Gi max). memory_limit value MUST be >= existing requests value — if you cannot confirm the current requests value, set memory_limit equal to the new limit. + CONFIDENCE: high
-- Deployment stuck after image change (ImagePullBackOff or wrong tag): ACTION: rollback_deployment + CONFIDENCE: medium
+- Deployment stuck after image change (ImagePullBackOff or wrong tag): ACTION: rollback_deployment ONLY IF describe_deployment shows revision >= 2 (i.e. a previous revision exists). If the deployment has only 1 revision (never had a working image), ACTION: none + CONFIDENCE: low
 - Pending pod / node pressure / unschedulable: ACTION: none + CONFIDENCE: medium
 - CreateContainerConfigError / missing secret / missing configmap: ACTION: none + CONFIDENCE: low
 Only use ACTION: none when the fix genuinely requires a config change, secret rotation, or manual investigation.

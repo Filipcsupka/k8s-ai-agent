@@ -127,8 +127,12 @@ async def on_interaction(interaction: discord.Interaction):
                         client, interaction, inv_id, f"⚡ Applied `{action_name}`"
                     )
                 else:
+                    try:
+                        err_detail = r2.json().get("detail", r2.text)
+                    except Exception:
+                        err_detail = r2.text
                     await interaction.followup.send(
-                        f"Apply failed ({r2.status_code}): {r2.text}", ephemeral=True
+                        f"Apply failed ({r2.status_code}): {err_detail}", ephemeral=True
                     )
 
             else:

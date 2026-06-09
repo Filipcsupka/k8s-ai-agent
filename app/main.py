@@ -157,7 +157,7 @@ async def apply_action(req: ApplyRequest):
         raise HTTPException(status_code=400, detail=f"Unknown action: {req.action}")
 
     if result.startswith("ERROR"):
-        raise HTTPException(status_code=500, detail=result)
+        raise HTTPException(status_code=400, detail=result)
 
     return {"status": "applied", "action": req.action, "result": result}
 
